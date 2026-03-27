@@ -167,20 +167,22 @@ class AStockFetcher:
     # ── single fetch ───────────────────────────────────────────
 
     def fetch_symbol_daily(self, ts_code: str, force_start: datetime = None) -> int:
-        """
-        增量拉取日线。返回新增行数。
-        """
         latest = self._daily_store.get_latest_date(ts_code)
         now = datetime.now()
 
         if force_start:
             start = force_start
         elif latest:
-            start = (latest - timedelta(days=3)).to_pydatetime()  # 多取几天防漏
+            start = (latest - timedelta(days=3)).to_pydatetime()
         else:
             start = now - timedelta(days=self.DEFAULT_LOOKBACK["daily"])
 
-        raw = self.client.fetch_daily_range(ts_code, start, now)
+        asset_class = self.instrument_data.get_asset_class(ts_code)
+        if asset_class == "ETF":
+            raw = self.client.fetch_fund_daily_range(ts_code, start, now)
+        else:
+            raw = self.client.fetch_daily_range(ts_code, start, now)
+
         if raw.empty:
             return 0
 
