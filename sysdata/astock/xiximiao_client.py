@@ -234,6 +234,17 @@ class XiximiaoClient:
 
         return self.fetch_daily(ts_code=ts_code, start_date=start_str, end_date=end_str)
 
+    def fetch_fund_daily_range(
+        self,
+        ts_code: str,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        """Convenience method: datetime args for fund_daily (ETFs)."""
+        start_str = start.strftime("%Y%m%d")
+        end_str = end.strftime("%Y%m%d")
+        return self.fetch_fund_daily(ts_code=ts_code, start_date=start_str, end_date=end_str)
+
     def fetch_minutes_range(
         self,
         ts_code: str,
