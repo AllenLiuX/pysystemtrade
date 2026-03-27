@@ -27,6 +27,7 @@ import pandas as pd
 
 from sysdata.astock.xiximiao_client import XiximiaoClient
 from sysdata.astock.astock_prices import AStockDailyPricesData, AStockMinutesPricesData
+from sysdata.astock.astock_instruments import AStockInstrumentData
 
 logging.basicConfig(
     level=logging.INFO,
@@ -147,10 +148,12 @@ class AStockFetcher:
         symbols: List[str],
         freqs: List[str] = None,
         client: XiximiaoClient = None,
+        instrument_data: AStockInstrumentData = None,
     ):
         self.symbols = symbols
         self.freqs = freqs or ["daily"]
         self.client = client or XiximiaoClient()
+        self.instrument_data = instrument_data or AStockInstrumentData()
 
         # Stores
         self._daily_store = AStockDailyPricesData()
