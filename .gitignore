@@ -25,6 +25,7 @@ restats
 # venv
 env/
 venv/
+uv.lock
 
 # libreoffice
 .~lock.*
@@ -35,3 +36,6 @@ venv/
 # A-stock parquet data (fetched, not committed)
 data/astock/daily_prices_parquet/*.parquet
 data/astock/minutes_prices_parquet/
+
+# Superpowers design docs and plans
+superpowers/
