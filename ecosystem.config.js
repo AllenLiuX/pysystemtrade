@@ -16,6 +16,8 @@ module.exports = {
       env: {
         PYTHONPATH: "/Users/wenxuanliu/TradeAll/pysystemtrade",
         PYTHONUNBUFFERED: "1",
+        ASTOCK_BACKEND: "pg",
+        ASTOCK_PG_URL: "postgresql://wenxuanliu@localhost:5432/astock",
       },
     },
   ],

@@ -77,17 +77,44 @@ def get_engine():
         return _engine
 
     from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+    import socket
 
     url = get_pg_url()
-    _engine = create_engine(
-        url,
-        pool_size=5,
-        max_overflow=10,
-        pool_pre_ping=True,
-        pool_recycle=3600,
-        echo=False,
-    )
-    logger.info("PostgreSQL engine created: %s", _mask_url(url))
+    
+    # Detect remote connection (Supabase) and add SSL options
+    if "supabase.co" in url or "grvepurdpupmjebbcjhp" in url:
+        # Extract host from URL and resolve to IPv4
+        try:
+            host_start = url.find('@') + 1
+            host_end = url.find(':', host_start)
+            host = url[host_start:host_end]
+            # Resolve to IPv4
+            ipv4 = socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
+            # Add hostaddr to force IPv4 without SSL cert hostname mismatch
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}sslmode=require&connect_timeout=30&hostaddr={ipv4}"
+        except Exception:
+            # Fallback: just add SSL params
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}sslmode=require&connect_timeout=30"
+        
+        # Use NullPool for remote connections to avoid stale connections
+        _engine = create_engine(
+            url,
+            poolclass=NullPool,
+            echo=False,
+        )
+    else:
+        _engine = create_engine(
+            url,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            echo=False,
+        )
+    logger.info("PostgreSQL engine created: %s", _mask_url(url.split('?')[0]))
     return _engine
 
 
