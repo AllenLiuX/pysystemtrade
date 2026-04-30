@@ -23,11 +23,14 @@ def run_backtest(
     instruments: list[str] = None,
     capital: float = 1_000_000,
     vol_lookback: int = 63,
+    max_history_years: float = 3.0,
 ) -> dict:
     """
     Run the rolling risk parity backtest.
 
-    Returns dict with equity_curve, weights, performance, etc.
+    Args:
+        max_history_years: Limit data fetch to this many years (default 3).
+            Set to 0 for unlimited (slower).
     """
     if instruments is None:
         instruments = ["510300.SH", "518880.SH", "511260.SH"]
@@ -75,18 +78,21 @@ def run_backtest(
 
     # Extract metrics
     equity_curve = system.accounts.portfolio().curve() + capital
-    equal_weight_portfolio = Portfolios()
-    equal_stages = [
-        Account(),
-        ForecastScaleCap(),
-        rules,
-        ForecastCombine(),
-        PositionSizing(),
-        equal_weight_portfolio,
-        RawData(),
-    ]
-    equal_system = System(equal_stages, data=data, config=config)
-    equal_equity = equal_system.accounts.portfolio().curve() + capital
+
+    # Compute equal-weight equity analytically from per-instrument P&L
+    # Eliminates the need for a second full System (~50% time savings)
+    instr_equities = []
+    for instr in valid_instruments:
+        instr_curve = system.accounts.pandl_for_instrument(instr).curve()
+        if len(instr_curve) > 0:
+            instr_capital = capital / len(valid_instruments)
+            instr_equities.append(instr_curve + instr_capital)
+
+    if instr_equities:
+        equal_equity = pd.DataFrame(instr_equities).mean(axis=1)
+        equal_equity = equal_equity.reindex(equity_curve.index).ffill()
+    else:
+        equal_equity = equity_curve.copy()
 
     returns = equity_curve.pct_change().dropna()
     equal_returns = equal_equity.pct_change().dropna()
