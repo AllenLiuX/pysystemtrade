@@ -7,7 +7,7 @@ with TTL-based expiration and manual refresh bypass.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,7 +38,14 @@ def get_metrics(refresh: bool = False) -> dict:
         return metrics
 
     logger.info("Cache hit — loading from cache")
-    raw = json.loads(CACHE_FILE.read_text())
+    try:
+        raw = json.loads(CACHE_FILE.read_text())
+    except json.JSONDecodeError:
+        logger.warning("Corrupted cache detected — running backtest")
+        metrics = run_backtest()
+        _save_cache(metrics)
+        return metrics
+
     return _deserialize_metrics(raw)
 
 
@@ -46,7 +53,7 @@ def get_cache_age() -> Optional[datetime]:
     """Return the timestamp of the last cache write."""
     if CACHE_FILE.exists():
         mtime = CACHE_FILE.stat().st_mtime
-        return datetime.fromtimestamp(mtime)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
     return None
 
 
@@ -64,7 +71,7 @@ def _is_cache_stale() -> bool:
     age = get_cache_age()
     if age is None:
         return True
-    return datetime.now() - age > timedelta(hours=CACHE_TTL_HOURS)
+    return datetime.now(timezone.utc) - age > timedelta(hours=CACHE_TTL_HOURS)
 
 
 def _save_cache(metrics: dict):
@@ -95,11 +102,13 @@ def _serialize_metrics(metrics: dict) -> dict:
             }
         elif isinstance(value, dict):
             result[key] = _serialize_metrics(value)
-        elif isinstance(value, (np.integer,)):
+        elif isinstance(value, np.integer):
             result[key] = int(value)
-        elif isinstance(value, (np.floating,)):
+        elif isinstance(value, np.floating):
             result[key] = float(value)
-        elif isinstance(value, (np.ndarray,)):
+        elif isinstance(value, np.bool_):
+            result[key] = bool(value)
+        elif isinstance(value, np.ndarray):
             result[key] = value.tolist()
         else:
             result[key] = value

@@ -10,6 +10,7 @@ from dashboard.data.metrics import (
     get_cache_age,
     clear_cache,
     CACHE_DIR,
+    CACHE_FILE,
     CACHE_TTL_HOURS,
     _serialize_metrics,
     _deserialize_metrics,
@@ -87,3 +88,16 @@ def test_get_metrics_refresh_bypasses_cache(mock_backtest):
     mock_backtest.reset_mock()
     get_metrics(refresh=True)
     mock_backtest.assert_called_once()
+
+
+@patch("dashboard.data.backtest.run_backtest")
+def test_get_metrics_handles_corrupted_cache(mock_backtest):
+    mock_backtest.return_value = {
+        "equity_curve": pd.Series([100, 105], index=pd.date_range("2024-01-01", periods=2)),
+        "performance": {"sharpe": 0.5, "total_return": 5.0},
+    }
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text("{invalid json")
+    result = get_metrics()
+    mock_backtest.assert_called_once()
+    assert "performance" in result
