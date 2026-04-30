@@ -20,7 +20,7 @@ TRADING_DAYS_PER_YEAR = 252
 
 
 def run_backtest(
-    instruments: list[str],
+    instruments: list[str] = None,
     capital: float = 1_000_000,
     vol_lookback: int = 63,
 ) -> dict:
@@ -29,6 +29,8 @@ def run_backtest(
 
     Returns dict with equity_curve, weights, performance, etc.
     """
+    if instruments is None:
+        instruments = ["510300.SH", "518880.SH", "511260.SH"]
     from sysdata.sim.astock_sim_data import AStockSimData
     from sysdata.config.configdata import Config
     from systems.basesystem import System
