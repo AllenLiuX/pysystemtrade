@@ -23,15 +23,6 @@ st.set_page_config(
 )
 
 
-@st.cache_resource
-def get_supabase_status():
-    """Check Supabase connection once per session."""
-    from dashboard.data.supabase import check_connection, get_last_update
-    ok = check_connection()
-    last_update = get_last_update() if ok else None
-    return ok, last_update
-
-
 def main():
     st.title("Risk Parity Dashboard")
 
@@ -41,12 +32,22 @@ def main():
 
     # Get metrics (with refresh support)
     refresh = st.session_state.pop("dashboard_refresh", False)
-    with st.spinner("Loading metrics..."):
-        from dashboard.data.metrics import get_metrics, get_cache_age
-        from dashboard.data.supabase import check_connection, get_last_update
 
-        metrics = get_metrics(refresh=refresh)
-        cache_age = get_cache_age()
+    if refresh or "dashboard_metrics" not in st.session_state:
+        with st.spinner("Loading metrics..."):
+            from dashboard.data.metrics import get_metrics, get_cache_age
+            from dashboard.data.supabase import check_connection, get_last_update
+
+            metrics = get_metrics(refresh=refresh)
+            st.session_state["dashboard_metrics"] = metrics
+            st.session_state["dashboard_cache_age"] = get_cache_age()
+            st.session_state["dashboard_supabase_ok"] = check_connection()
+            st.session_state["dashboard_last_update"] = get_last_update() if st.session_state["dashboard_supabase_ok"] else None
+    else:
+        metrics = st.session_state["dashboard_metrics"]
+        cache_age = st.session_state.get("dashboard_cache_age")
+        supabase_ok = st.session_state.get("dashboard_supabase_ok", False)
+        last_update = st.session_state.get("dashboard_last_update")
 
     # Sidebar
     with st.sidebar:
@@ -59,12 +60,13 @@ def main():
 
         st.divider()
         st.header("System Status")
-        supabase_ok, last_update = get_supabase_status()
+        supabase_ok = st.session_state.get("dashboard_supabase_ok", False)
         if supabase_ok:
             st.caption("🟢 Supabase connected")
         else:
             st.caption("🔴 Supabase disconnected")
 
+        cache_age = st.session_state.get("dashboard_cache_age")
         if cache_age:
             age_hours = (datetime.now(timezone.utc) - cache_age).total_seconds() / 3600
             st.caption(f"Cache: {age_hours:.1f}h old")
@@ -88,7 +90,11 @@ def main():
         render_instruments(metrics)
     elif view == "System Health":
         from dashboard.views.system_health import render as render_health
-        render_health(cache_age, supabase_ok, last_update)
+        render_health(
+            st.session_state.get("dashboard_cache_age"),
+            st.session_state.get("dashboard_supabase_ok", False),
+            st.session_state.get("dashboard_last_update"),
+        )
 
 
 if __name__ == "__main__":
