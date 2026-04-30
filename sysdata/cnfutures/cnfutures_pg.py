@@ -7,12 +7,14 @@ Tables:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional
 import pandas as pd
 from sqlalchemy import (
     Table, Column, BigInteger, Float, String, Date, DateTime, Text,
-    UniqueConstraint, Index, MetaData,
+    UniqueConstraint, Index, MetaData, func,
 )
+from sqlalchemy.dialects.postgresql import insert
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ class PGDailyPricesData:
                 Column("volume", BigInteger),
                 Column("hold", BigInteger),
                 Column("settle", Float),
-                Column("created_at", DateTime, server_default=DateTime()),
+                Column("created_at", DateTime, server_default=func.now()),
                 UniqueConstraint("symbol", "dt", name="uq_cnfutures_daily_symbol_dt"),
                 Index("ix_cnfutures_daily_symbol_dt", "symbol", "dt"),
             )
@@ -73,11 +75,10 @@ class PGDailyPricesData:
         self.table.create(self.engine, checkfirst=True)
         logger.info("Table cnfutures_daily_prices ready")
 
-    def get_latest_date(self, symbol: str):
+    def get_latest_date(self, symbol: str) -> Optional[str]:
         """Get the latest date for a symbol. Returns 'YYYY-MM-DD' or None."""
-        from sqlalchemy import select, func
         with self.engine.connect() as conn:
-            stmt = select(func.max(self.table.c.dt)).where(
+            stmt = func.max(self.table.c.dt).label("max_dt").select().where(
                 self.table.c.symbol == symbol
             )
             result = conn.execute(stmt).scalar()
@@ -96,20 +97,20 @@ class PGDailyPricesData:
         if df is None or df.empty:
             return
 
-        from sqlalchemy.dialects.postgresql import insert
-
+        # Build rows using to_dict for efficiency
+        records = df.to_dict("records")
         rows = []
-        for _, row in df.iterrows():
+        for rec in records:
             rows.append({
                 "symbol": symbol,
-                "dt": pd.to_datetime(row["date"]).date(),
-                "open": float(row.get("open")),
-                "high": float(row.get("high")),
-                "low": float(row.get("low")),
-                "close": float(row.get("close")),
-                "volume": int(row.get("volume", 0)),
-                "hold": int(row.get("hold", 0)),
-                "settle": float(row.get("settle", 0)) if pd.notna(row.get("settle")) else None,
+                "dt": pd.to_datetime(rec["date"]).date(),
+                "open": float(rec["open"]) if pd.notna(rec.get("open")) else None,
+                "high": float(rec["high"]) if pd.notna(rec.get("high")) else None,
+                "low": float(rec["low"]) if pd.notna(rec.get("low")) else None,
+                "close": float(rec["close"]) if pd.notna(rec.get("close")) else None,
+                "volume": int(rec["volume"]) if pd.notna(rec.get("volume")) else 0,
+                "hold": int(rec["hold"]) if pd.notna(rec.get("hold")) else 0,
+                "settle": float(rec["settle"]) if pd.notna(rec.get("settle")) else None,
             })
 
         stmt = insert(self.table).values(rows)
@@ -162,7 +163,7 @@ class PGInstrumentData:
                 Column("trading_hours", Text),
                 Column("delivery_method", String(50)),
                 Column("quotation_unit", String(50)),
-                Column("updated_at", DateTime, server_default=DateTime()),
+                Column("updated_at", DateTime, server_default=func.now()),
             )
         return self._table
 
@@ -179,18 +180,16 @@ class PGInstrumentData:
             detail_map: dict mapping akshare API field names to values,
                         from CnFuturesClient.get_contract_detail()
         """
-        from sqlalchemy.dialects.postgresql import insert
-
         row = {"symbol": symbol}
         for akshare_key, col_name in AKSHARE_FIELD_MAP.items():
             row[col_name] = detail_map.get(akshare_key)
 
         stmt = insert(self.table).values(**row)
         upsert_stmt = stmt.on_conflict_do_update(
-            constraint=f"{self.table.name}_pkey",
+            index_elements=["symbol"],
             set_={k: stmt.excluded[k] for k in row if k != "symbol"},
         )
-        upsert_stmt = upsert_stmt.values(updated_at=datetime.utcnow())
+        upsert_stmt = upsert_stmt.values(updated_at=datetime.now(timezone.utc))
 
         with self.engine.begin() as conn:
             conn.execute(upsert_stmt)

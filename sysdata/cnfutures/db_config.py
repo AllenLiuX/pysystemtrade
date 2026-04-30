@@ -24,11 +24,28 @@ except ImportError:
 BACKEND = os.environ.get("CNFUTURES_BACKEND", "parquet").lower()
 PG_URL = os.environ.get("CNFUTURES_PG_URL", "")
 
+# Module-level engine singleton to avoid leaking connection pools
+_engine = None
+
 
 def _get_engine():
-    """Create SQLAlchemy engine for PostgreSQL."""
-    from sqlalchemy import create_engine
-    return create_engine(PG_URL)
+    """Create or return cached SQLAlchemy engine for PostgreSQL."""
+    global _engine
+    if _engine is None:
+        if not PG_URL:
+            raise ValueError(
+                "CNFUTURES_PG_URL is not set. "
+                "Add it to your .env file or set the environment variable."
+            )
+        from sqlalchemy import create_engine
+        _engine = create_engine(
+            PG_URL,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+        )
+    return _engine
 
 
 def get_daily_prices_store():
