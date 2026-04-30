@@ -20,16 +20,21 @@ logger = logging.getLogger(__name__)
 class CnFuturesClient:
     """Akshare-based Chinese futures data client."""
 
-    def get_contract_list(self) -> pd.DataFrame:
+    def get_contract_list(self) -> Optional[pd.DataFrame]:
         """
         Get all available Sina futures continuous contracts.
 
         Returns:
             DataFrame with columns: symbol, exchange, name
             e.g. symbol='RB0', exchange='dce', name='Rebar continuous'
+            Returns None on failure.
         """
-        df = ak.futures_display_main_sina()
-        return df
+        try:
+            df = ak.futures_display_main_sina()
+            return df
+        except Exception as e:
+            logger.warning("Failed to get contract list: %s", e)
+            return None
 
     def get_contract_detail(self, symbol: str) -> Optional[pd.DataFrame]:
         """
