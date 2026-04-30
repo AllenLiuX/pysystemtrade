@@ -39,3 +39,5 @@ data/astock/minutes_prices_parquet/
 
 # Superpowers design docs and plans
 docs/superpowers/
+# pm2 logs
+logs/
