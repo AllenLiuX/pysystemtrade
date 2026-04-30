@@ -3,7 +3,7 @@ System Health view — data freshness, connection status, cache info.
 """
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def render(cache_age, supabase_ok: bool, last_update):
@@ -23,7 +23,7 @@ def render(cache_age, supabase_ok: bool, last_update):
 
     st.subheader("Cache Status")
     if cache_age:
-        age_hours = (datetime.now() - cache_age).total_seconds() / 3600
+        age_hours = (datetime.now(timezone.utc) - cache_age.replace(tzinfo=timezone.utc) if cache_age.tzinfo is None else cache_age).total_seconds() / 3600
         st.info(f"Cache age: {age_hours:.1f} hours")
         if age_hours > 24:
             st.warning("Cache is older than 24 hours — consider refreshing")

@@ -11,23 +11,26 @@ import pandas as pd
 def render(metrics: dict):
     st.header("Strategy Overview")
 
+    equity_curve = metrics.get("equity_curve")
+    if equity_curve is None or equity_curve.empty:
+        st.warning("No equity curve data available.")
+        return
+
     perf = metrics.get("performance", {})
     equal_perf = metrics.get("equal_performance", {})
+    equal_equity = metrics.get("equal_weight_equity")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Portfolio Value", f"{metrics['equity_curve'].iloc[-1]:,.0f} CNY")
+    col1.metric("Portfolio Value", f"{equity_curve.iloc[-1]:,.0f} CNY")
     col2.metric("Sharpe Ratio", f"{perf.get('sharpe', 0):.2f}")
     col3.metric("Max Drawdown", f"{perf.get('max_drawdown', 0):.2f}%")
     col4.metric("Annualized Return", f"{perf.get('annualized_return', 0):.2f}%")
 
-    _plot_equity_and_drawdown(metrics)
+    _plot_equity_and_drawdown(equity_curve, equal_equity)
     _comparison_table(perf, equal_perf)
 
 
-def _plot_equity_and_drawdown(metrics: dict):
-    equity_curve = metrics["equity_curve"]
-    equal_equity = metrics.get("equal_weight_equity")
-
+def _plot_equity_and_drawdown(equity_curve, equal_equity=None):
     returns = equity_curve.pct_change().dropna()
     cumulative = (1 + returns).cumprod()
     running_max = cumulative.cummax()
