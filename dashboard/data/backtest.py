@@ -133,10 +133,7 @@ class RollingRiskParityPortfolio(Portfolios):
         subsystem_positions = self._get_all_subsystem_positions()
         position_series_index = subsystem_positions.index
 
-        weights = self._precomputed_weights.reindex(
-            position_series_index,
-            method="ffill",
-        )
+        weights = self._precomputed_weights.reindex(position_series_index).ffill()
 
         instrument_list = self.get_instrument_list()
         weights = weights[instrument_list]
@@ -183,7 +180,7 @@ def _calc_rolling_weights(data, instruments: list[str], vol_lookback: int) -> pd
             rolling_weights_list.append({"date": month_end, **weights})
 
     rolling_weights_df = pd.DataFrame(rolling_weights_list).set_index("date")
-    daily_weights = rolling_weights_df.reindex(all_dates, method="ffill").dropna()
+    daily_weights = rolling_weights_df.reindex(all_dates).ffill().dropna()
     return daily_weights
 
 
