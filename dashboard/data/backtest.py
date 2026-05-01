@@ -93,19 +93,25 @@ def run_backtest(
 
     # Compute equal-weight equity analytically from per-instrument P&L
     # Equal-weight = mean of N equally-weighted instrument returns, compounded from capital
-    instr_daily_returns = []
+    instr_daily_returns = {}
     for instr in valid_instruments:
         instr_curve = system.accounts.pandl_for_instrument(instr).curve()
         if len(instr_curve) > 0:
             instr_capital = capital / len(valid_instruments)
             instr_equity = instr_curve + instr_capital
-            instr_daily_returns.append(instr_equity.pct_change().dropna())
+            instr_daily_returns[instr] = instr_equity.pct_change().dropna()
 
     if instr_daily_returns:
         returns_df = pd.DataFrame(instr_daily_returns).dropna()
         daily_portfolio_return = returns_df.mean(axis=1)
-        equal_equity = (1 + daily_portfolio_return).cumprod() * capital
-        equal_equity = equal_equity.reindex(equity_curve.index).ffill()
+        # Normalize cumulative product to start at 1.0, then scale to capital
+        cum_prod = (1 + daily_portfolio_return).cumprod()
+        cum_prod = cum_prod / cum_prod.iloc[0]
+        # Prepend 1.0 at the start of equity_curve index so ffill covers all dates
+        start_date = equity_curve.index[0]
+        cum_prod = pd.concat([pd.Series([1.0], index=[start_date]), cum_prod])
+        cum_prod = cum_prod[~cum_prod.index.duplicated(keep="first")]
+        equal_equity = cum_prod.reindex(equity_curve.index).ffill() * capital
     else:
         equal_equity = equity_curve.copy()
 
@@ -178,9 +184,8 @@ def _calc_rolling_weights(data, instruments: list[str], vol_lookback: int) -> pd
     returns_df = pd.DataFrame(returns_dict).dropna()
 
     all_dates = returns_df.index
-    month_freq = "M"
     monthly_dates = all_dates.to_frame().set_index(
-        all_dates.to_period(month_freq).to_timestamp()
+        all_dates.to_period("M").to_timestamp()
     ).index.unique()
 
     rolling_weights_list = []
