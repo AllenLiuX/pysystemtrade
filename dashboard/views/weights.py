@@ -52,15 +52,15 @@ def _current_weights_bar(weights: pd.DataFrame, ew_weights: pd.DataFrame = None)
         all_instruments = list(set(list(latest_rp.index) + list(latest_ew.index)))
         rp_vals = [latest_rp.get(instr, 0) for instr in all_instruments]
         ew_vals = [latest_ew.get(instr, 0) for instr in all_instruments]
-        colors_rp = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
-        colors_ew = [c + "80" for c in colors_rp]
+        colors_rp = ["rgba(31,119,180,1)", "rgba(255,127,14,1)", "rgba(44,160,44,1)", "rgba(214,39,40,1)", "rgba(148,103,189,1)"]
+        colors_ew = ["rgba(31,119,180,0.5)", "rgba(255,127,14,0.5)", "rgba(44,160,44,0.5)", "rgba(214,39,40,0.5)", "rgba(148,103,189,0.5)"]
 
         fig = go.Figure()
         fig.add_trace(go.Bar(x=all_instruments, y=rp_vals, name="Risk Parity", marker_color=colors_rp[:len(all_instruments)], text=[f"{v:.1%}" for v in rp_vals], textposition="auto"))
         fig.add_trace(go.Bar(x=all_instruments, y=ew_vals, name="Equal Weight", marker_color=colors_ew[:len(all_instruments)], text=[f"{v:.1%}" for v in ew_vals], textposition="auto"))
         fig.update_layout(yaxis_title="Weight", yaxis=dict(range=[0, 1.1]), barmode="group", height=350)
     else:
-        fig = go.Figure(go.Bar(x=latest_rp.index, y=latest_rp.values, text=[f"{v:.1%}" for v in latest_rp.values], textposition="auto", marker_color=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]))
+        fig = go.Figure(go.Bar(x=latest_rp.index, y=latest_rp.values, text=[f"{v:.1%}" for v in latest_rp.values], textposition="auto", marker_color=["rgba(31,119,180,1)", "rgba(255,127,14,1)", "rgba(44,160,44,1)", "rgba(214,39,40,1)", "rgba(148,103,189,1)"]))
         fig.update_layout(yaxis_title="Weight", yaxis=dict(range=[0, 1.1]), height=350)
 
     st.plotly_chart(fig, use_container_width=True)
