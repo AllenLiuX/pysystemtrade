@@ -1,0 +1,249 @@
+"""
+Tests for AHData stage.
+
+Tests cover:
+- Pair code lookup (bidirectional)
+- Log return spread calculation
+- Z-score calculation
+- Edge cases (non-AH instruments, missing data)
+"""
+
+import pytest
+import pandas as pd
+import numpy as np
+
+from systems.ah_data import AHData
+
+
+class MockRawData:
+    """Mock RawData stage for testing."""
+
+    def __init__(self, price_data: dict):
+        self._price_data = price_data
+
+    def get_daily_prices(self, instrument_code: str) -> pd.Series:
+        if instrument_code in self._price_data:
+            return self._price_data[instrument_code]
+        raise Exception(f"No data for {instrument_code}")
+
+
+class MockSystem:
+    """Mock system for testing AHData."""
+
+    def __init__(self, price_data: dict):
+        self.rawdata = MockRawData(price_data)
+        self._ah_data = None
+
+    @property
+    def ah_data(self):
+        if self._ah_data is None:
+            self._ah_data = AHData()
+            self._ah_data._parent = self
+        return self._ah_data
+
+
+def make_price_series(values: list, start_date: str = "2026-01-01") -> pd.Series:
+    """Create a price series with business day frequency."""
+    dates = pd.bdate_range(start=start_date, periods=len(values))
+    return pd.Series(values, index=dates, dtype=float)
+
+
+class TestGetAhPairCode:
+    """Tests for get_ah_pair_code method."""
+
+    def test_a_to_h_lookup(self):
+        """A-share code returns H-share code."""
+        ah_data = AHData()
+        result = ah_data.get_ah_pair_code("601318.SH")
+        assert result == "02318.HK"
+
+    def test_h_to_a_lookup(self):
+        """H-share code returns A-share code."""
+        ah_data = AHData()
+        result = ah_data.get_ah_pair_code("02318.HK")
+        assert result == "601318.SH"
+
+    def test_non_ah_instrument_returns_none(self):
+        """Non-AH instrument returns None."""
+        ah_data = AHData()
+        result = ah_data.get_ah_pair_code("000001.SZ")
+        assert result is None
+
+    def test_multiple_pairs(self):
+        """Multiple known pairs resolve correctly."""
+        ah_data = AHData()
+        pairs = [
+            ("600036.SH", "03968.HK"),
+            ("601398.SH", "01398.HK"),
+            ("601288.SH", "01288.HK"),
+        ]
+        for a_code, h_code in pairs:
+            assert ah_data.get_ah_pair_code(a_code) == h_code
+            assert ah_data.get_ah_pair_code(h_code) == a_code
+
+
+class TestGetListOfAhInstruments:
+    """Tests for get_list_of_ah_instruments method."""
+
+    def test_returns_sorted_list(self):
+        """Returns a sorted list of instrument codes."""
+        ah_data = AHData()
+        instruments = ah_data.get_list_of_ah_instruments()
+        assert isinstance(instruments, list)
+        assert len(instruments) > 0
+        assert instruments == sorted(instruments)
+
+    def test_contains_both_a_and_h(self):
+        """List contains both A-share and H-share codes."""
+        ah_data = AHData()
+        instruments = ah_data.get_list_of_ah_instruments()
+        has_a = any(c.endswith(".SH") or c.endswith(".SZ") for c in instruments)
+        has_h = any(c.endswith(".HK") for c in instruments)
+        assert has_a
+        assert has_h
+
+
+class TestGetAhLogReturnSpread:
+    """Tests for get_ah_log_return_spread method."""
+
+    def _make_mock_system(self, a_prices, h_prices, a_code="601318.SH", h_code="02318.HK"):
+        """Create a mock system with controlled price data."""
+        price_data = {
+            a_code: make_price_series(a_prices),
+            h_code: make_price_series(h_prices),
+        }
+        system = MockSystem(price_data)
+        return system
+
+    def test_spread_for_known_pair(self):
+        """Spread is computed for a known A+H pair."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+                    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+                    100, 100, 100, 100, 100, 100]
+
+        system = self._make_mock_system(a_prices, h_prices)
+        spread = system.ah_data.get_ah_log_return_spread("601318.SH")
+
+        assert not spread.empty
+        assert len(spread) == len(a_prices) - 1
+        assert spread.iloc[-1] > 0
+
+    def test_spread_symmetric(self):
+        """Spread is the same regardless of which leg is queried."""
+        a_prices = [100, 102, 101, 103, 105, 104, 106, 108, 107, 109,
+                    111, 110, 112, 114, 113, 115, 117, 116, 118, 120,
+                    119, 121, 123, 122, 124, 126]
+        h_prices = [100, 101, 102, 101, 103, 102, 104, 103, 105, 104,
+                    106, 105, 107, 106, 108, 107, 109, 108, 110, 109,
+                    111, 110, 112, 111, 113, 112]
+
+        system = self._make_mock_system(a_prices, h_prices)
+        spread_a = system.ah_data.get_ah_log_return_spread("601318.SH")
+        spread_h = system.ah_data.get_ah_log_return_spread("02318.HK")
+
+        pd.testing.assert_series_equal(spread_a, spread_h)
+
+    def test_non_ah_instrument_returns_empty(self):
+        """Non-AH instrument returns empty series."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+        spread = system.ah_data.get_ah_log_return_spread("000001.SZ")
+
+        assert spread.empty
+
+    def test_spread_with_common_dates_only(self):
+        """Spread is computed only on common trading days."""
+        a_dates = pd.bdate_range("2026-01-01", periods=10)
+        a_prices = pd.Series([100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+                            index=a_dates)
+
+        h_dates = pd.bdate_range("2026-01-05", periods=10)
+        h_prices = pd.Series([100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+                            index=h_dates)
+
+        price_data = {
+            "601318.SH": a_prices,
+            "02318.HK": h_prices,
+        }
+        system = MockSystem(price_data)
+        spread = system.ah_data.get_ah_log_return_spread("601318.SH")
+
+        common = a_dates.intersection(h_dates)
+        assert len(spread) == len(common) - 1
+
+
+class TestGetAhSpreadZscore:
+    """Tests for get_ah_spread_zscore method."""
+
+    def _make_mock_system(self, a_prices, h_prices, a_code="601318.SH", h_code="02318.HK"):
+        """Create a mock system with controlled price data."""
+        price_data = {
+            a_code: make_price_series(a_prices),
+            h_code: make_price_series(h_prices),
+        }
+        system = MockSystem(price_data)
+        return system
+
+    def test_zscore_values(self):
+        """Z-score is computed correctly."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125, 126, 127, 128, 129,
+                    130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
+                    140, 141, 142, 143, 144, 145]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+        zscore = system.ah_data.get_ah_spread_zscore("601318.SH", lookback=20)
+
+        assert not zscore.empty
+        assert zscore.iloc[:19].isna().all()
+        assert zscore.iloc[19:].notna().any()
+
+    def test_zscore_with_custom_lookback(self):
+        """Z-score respects custom lookback parameter."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+
+        zscore_5 = system.ah_data.get_ah_spread_zscore("601318.SH", lookback=5)
+        zscore_10 = system.ah_data.get_ah_spread_zscore("601318.SH", lookback=10)
+
+        assert not zscore_5.equals(zscore_10)
+        assert zscore_5.iloc[:4].isna().all()
+        assert zscore_10.iloc[:9].isna().all()
+
+    def test_zscore_for_non_ah_returns_empty(self):
+        """Z-score for non-AH instrument returns empty series."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+        zscore = system.ah_data.get_ah_spread_zscore("000001.SZ")
+
+        assert zscore.empty
+
+    def test_zscore_mean_reversion_signal(self):
+        """Z-score correctly identifies mean-reversion opportunity."""
+        a_prices = [100, 102, 104, 106, 108, 110, 112, 114, 116, 118,
+                    120, 122, 124, 126, 128, 130, 132, 134, 136, 138,
+                    140, 142, 144, 146, 148, 150]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+        zscore = system.ah_data.get_ah_spread_zscore("601318.SH", lookback=10)
+
+        late_zscore = zscore.dropna().iloc[-1]
+        assert late_zscore > 0
