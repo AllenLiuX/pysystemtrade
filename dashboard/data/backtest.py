@@ -137,8 +137,8 @@ def run_backtest(
     # Volatility
     vol_data = _calc_volatility(system, valid_instruments, equity_curve, capital)
 
-    # Equal-weight weights (constant 1/N for each instrument)
-    ew_weights = _calc_equal_weights(equity_curve.index, valid_instruments)
+    # Equal-weight weights (drifting buy-and-hold, not constant 1/N)
+    ew_weights = _calc_equal_weight_drifting_weights(system, valid_instruments, equity_curve, capital)
 
     # Volume data for price charts
     volume_data = _get_volume_data(data, valid_instruments, common_start)
@@ -328,11 +328,22 @@ def _get_forecasts(system, instruments) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _calc_equal_weights(dates: pd.DatetimeIndex, instruments: list[str]) -> pd.DataFrame:
-    """Generate constant equal-weight (1/N) series aligned to given dates."""
-    n = len(instruments)
-    weights = {instr: [1.0 / n] * len(dates) for instr in instruments}
-    return pd.DataFrame(weights, index=dates)
+def _calc_equal_weight_drifting_weights(system, instruments: list[str], equity_curve: pd.Series, capital: float) -> pd.DataFrame:
+    """Compute drifting buy-and-hold equal-weight weights from per-instrument equity curves."""
+    instr_equities = {}
+    for instr in instruments:
+        instr_curve = system.accounts.pandl_for_instrument(instr).curve()
+        if len(instr_curve) > 0:
+            instr_capital = capital / len(instruments)
+            instr_equities[instr] = instr_curve + instr_capital
+
+    if not instr_equities:
+        return pd.DataFrame()
+
+    eq_df = pd.DataFrame(instr_equities).dropna()
+    total_equity = eq_df.sum(axis=1)
+    weights = eq_df.div(total_equity, axis=0)
+    return weights.reindex(equity_curve.index).ffill()
 
 
 def _get_volume_data(data, instruments: list[str], common_start) -> dict:
