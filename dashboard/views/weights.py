@@ -69,7 +69,11 @@ def _current_weights_bar(weights: pd.DataFrame, ew_weights: pd.DataFrame = None)
 def _positions_table(positions: pd.DataFrame):
     st.subheader("Vol-Scaled Positions")
 
-    df = positions.copy()
+    df = positions.dropna(how="all").copy()
+    if df.empty:
+        st.warning("No position data available.")
+        return
+
     df.index = df.index.date
 
     abs_positions = df.abs()
