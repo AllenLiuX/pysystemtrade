@@ -245,7 +245,7 @@ if all_forecasts:
 
 # %%
     monthly_returns = equity.resample("M").last().pct_change() * 100
-monthly_returns.index = pd.PeriodIndex(monthly_returns.index, freq="ME")
+monthly_returns.index = pd.PeriodIndex(monthly_returns.index, freq="M")
 
 # Pivot into years × months for heatmap
 returns_pivot = monthly_returns.groupby([

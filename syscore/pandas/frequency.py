@@ -69,7 +69,7 @@ def intraday_date_rows_in_pd_object(
 
 def get_intraday_pdf_at_frequency(
     pd_object: Union[pd.DataFrame, pd.Series],
-    frequency: str = "h",
+    frequency: str = "H",
     closing_time: pd.DateOffset = NOTIONAL_CLOSING_TIME_AS_PD_OFFSET,
 ) -> Union[pd.Series, pd.DataFrame]:
     """
@@ -174,7 +174,7 @@ def how_many_times_a_year_is_pd_frequency(frequency: str) -> float:
     DICT_OF_FREQ = {
         "B": BUSINESS_DAYS_IN_YEAR,
         "W": WEEKS_IN_YEAR,
-        "ME": MONTHS_IN_YEAR,
+        "M": MONTHS_IN_YEAR,
         "D": CALENDAR_DAYS_IN_YEAR,
     }
 
@@ -222,7 +222,7 @@ def reindex_last_monthly_include_first_date(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df_monthly_index = list(df.resample("M").last().index)  ## last day in month
+    df_monthly_index = list(df.resample("M").last().index)  # last day in month
     df_first_date_in_index = df.index[0]
     df_monthly_index = [df_first_date_in_index] + df_monthly_index
     df_reindex = df.reindex(df_monthly_index).ffill()
@@ -236,7 +236,7 @@ def infer_frequency(df_or_ts: Union[pd.DataFrame, pd.Series]) -> Frequency:
         return infer_frequency_approx(df_or_ts)
     if inferred == "B":
         return BUSINESS_DAY_FREQ
-    if inferred == "h":
+    if inferred == "H":
         return HOURLY_FREQ
     raise Exception("Frequency of time series unknown")
 
