@@ -35,7 +35,7 @@ def _instrument_table(instr_metrics: dict):
         rows.append(row)
     df = pd.DataFrame(rows)
     numeric_cols = df.select_dtypes(include="number").columns
-    st.dataframe(df.style.format({c: "{:.2f}" for c in numeric_cols}).hide(axis="index"), use_container_width=True)
+    st.dataframe(df.style.format({c: "{:.2f}" for c in numeric_cols}), use_container_width=True, hide_index=True)
 
 
 def _price_chart(metrics: dict):
