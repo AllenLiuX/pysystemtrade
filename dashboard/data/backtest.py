@@ -137,11 +137,18 @@ def run_backtest(
     # Volatility
     vol_data = _calc_volatility(system, valid_instruments, equity_curve, capital)
 
+    # Equal-weight weights (constant 1/N for each instrument)
+    ew_weights = _calc_equal_weights(equity_curve.index, valid_instruments)
+
+    # Volume data for price charts
+    volume_data = _get_volume_data(data, valid_instruments, common_start)
+
     return {
         "equity_curve": equity_curve,
         "equal_weight_equity": equal_equity,
         "weights": system.portfolio.get_instrument_weights(),
         "rolling_weights": _extract_rolling_recalc_points(daily_weights, valid_instruments),
+        "equal_weight_weights": ew_weights,
         "volatility": vol_data,
         "performance": performance,
         "equal_performance": equal_performance,
@@ -149,6 +156,7 @@ def run_backtest(
         "positions": _get_positions(system, valid_instruments),
         "forecasts": _get_forecasts(system, valid_instruments),
         "raw_prices": raw_prices,
+        "volume_data": volume_data,
     }
 
 
@@ -318,3 +326,26 @@ def _get_forecasts(system, instruments) -> pd.DataFrame:
     if forecasts:
         return pd.DataFrame(forecasts)
     return pd.DataFrame()
+
+
+def _calc_equal_weights(dates: pd.DatetimeIndex, instruments: list[str]) -> pd.DataFrame:
+    """Generate constant equal-weight (1/N) series aligned to given dates."""
+    n = len(instruments)
+    weights = {instr: [1.0 / n] * len(dates) for instr in instruments}
+    return pd.DataFrame(weights, index=dates)
+
+
+def _get_volume_data(data, instruments: list[str], common_start) -> dict:
+    """Get volume time series for each instrument."""
+    volume = {}
+    for instr in instruments:
+        try:
+            ohlcv = data.get_ohlcv(instr)
+            if not ohlcv.empty and "volume" in ohlcv.columns:
+                vol = ohlcv["volume"]
+                if common_start is not None:
+                    vol = vol[vol.index >= common_start]
+                volume[instr] = vol
+        except Exception:
+            pass
+    return volume
