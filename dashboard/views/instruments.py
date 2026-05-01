@@ -38,12 +38,25 @@ def _instrument_table(instr_metrics: dict):
 
 
 def _price_chart(metrics: dict):
-    st.subheader("Price Chart")
-    equity_curve = metrics.get("equity_curve")
-    if equity_curve is None:
+    st.subheader("Per-Instrument Price Chart")
+
+    raw_prices = metrics.get("raw_prices", {})
+    if not raw_prices:
+        equity_curve = metrics.get("equity_curve")
+        if equity_curve is not None:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve.values, name="Portfolio Value", line=dict(color="#1f77b4", width=2)))
+            fig.update_layout(title="Portfolio Value Over Time", yaxis_title="Value (CNY)", xaxis_title="Date", height=400)
+            st.plotly_chart(fig, use_container_width=True)
         return
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve.values, name="Portfolio Value", line=dict(color="#1f77b4", width=2)))
-    fig.update_layout(title="Portfolio Value Over Time", yaxis_title="Value (CNY)", xaxis_title="Date", height=400)
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Note: Per-instrument price charts can be added in a future update.")
+
+    instrument = st.selectbox("Select instrument", list(raw_prices.keys()))
+
+    prices = raw_prices.get(instrument)
+    if prices is not None and not prices.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=prices.index, y=prices.values, name=instrument, line=dict(color="#1f77b4", width=2)))
+        fig.update_layout(title=f"{instrument} Price", yaxis_title="Price (CNY)", xaxis_title="Date", height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning(f"No price data for {instrument}")

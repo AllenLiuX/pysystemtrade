@@ -118,7 +118,10 @@ def run_backtest(
 
     # Per-instrument metrics
     instr_metrics = {}
+    raw_prices = {}
     for instr in valid_instruments:
+        prices = data.get_raw_price(instr)
+        raw_prices[instr] = prices[prices.index >= common_start] if common_start else prices
         instr_curve = system.accounts.pandl_for_instrument(instr).curve()
         if len(instr_curve) > 0:
             instr_capital = capital / len(valid_instruments)
@@ -140,6 +143,7 @@ def run_backtest(
         "instruments": instr_metrics,
         "positions": _get_positions(system, valid_instruments),
         "forecasts": _get_forecasts(system, valid_instruments),
+        "raw_prices": raw_prices,
     }
 
 
@@ -150,9 +154,10 @@ class RollingRiskParityPortfolio(Portfolios):
         super().__init__()
         self._precomputed_weights = precomputed_weights
 
-    def get_instrument_weights(self) -> pd.DataFrame:
+    def get_unsmoothed_raw_instrument_weights(self) -> pd.DataFrame:
+        """Override to inject precomputed inverse-vol weights into the Portfolios pipeline."""
         if self._precomputed_weights is None:
-            return super().get_instrument_weights()
+            return super().get_unsmoothed_raw_instrument_weights()
 
         subsystem_positions = self._get_all_subsystem_positions()
         position_series_index = subsystem_positions.index

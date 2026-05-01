@@ -40,13 +40,19 @@ def _plot_equity_and_drawdown(equity_curve, equal_equity=None):
 
     fig.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve.values, name="Risk Parity", line=dict(color="#1f77b4", width=2)), row=1, col=1)
 
-    if equal_equity is not None:
-        fig.add_trace(go.Scatter(x=equal_equity.index, y=equal_equity.values, name="Equal Weight", line=dict(color="#2ca02c", width=2, dash="dash")), row=1, col=1)
-
     capital = equity_curve.iloc[0]
     fig.add_hline(y=capital, line_dash="dot", line_color="gray", opacity=0.5, annotation_text="Initial Capital", row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=drawdown.index, y=drawdown.values, fill="tozeroy", fillcolor="rgba(255,0,0,0.2)", line=dict(color="red", width=1), name="Drawdown", showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=drawdown.index, y=drawdown.values, fill="tozeroy", fillcolor="rgba(255,0,0,0.2)", line=dict(color="#1f77b4", width=1), name="RP Drawdown", legendgroup="rp"), row=2, col=1)
+
+    if equal_equity is not None:
+        fig.add_trace(go.Scatter(x=equal_equity.index, y=equal_equity.values, name="Equal Weight", line=dict(color="#2ca02c", width=2, dash="dash")), row=1, col=1)
+
+        ew_returns = equal_equity.pct_change().dropna()
+        ew_cumulative = (1 + ew_returns).cumprod()
+        ew_running_max = ew_cumulative.cummax()
+        ew_drawdown = (ew_cumulative - ew_running_max) / ew_running_max * 100
+        fig.add_trace(go.Scatter(x=ew_drawdown.index, y=ew_drawdown.values, fill="tozeroy", fillcolor="rgba(0,255,0,0.2)", line=dict(color="#2ca02c", width=1), name="EW Drawdown", legendgroup="ew"), row=2, col=1)
 
     fig.update_layout(height=600, title="Equity Curve & Drawdown", showlegend=True, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     fig.update_yaxes(title_text="Portfolio Value (CNY)", row=1, col=1)
