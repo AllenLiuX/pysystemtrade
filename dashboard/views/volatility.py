@@ -68,67 +68,77 @@ def _plot_volatility_cones(vol_cones: dict):
     st.subheader("Realized Volatility Cones")
 
     horizons = sorted(vol_cones.keys())
-    selected_horizon = st.selectbox("Cone Horizon (days)", horizons, index=len(horizons) - 1)
+    all_instruments = set()
+    for h_data in vol_cones.values():
+        all_instruments.update(h_data.keys())
+    all_instruments = sorted(all_instruments)
 
-    cone = vol_cones[selected_horizon]
-    if not cone:
-        st.warning("No cone data for this horizon.")
-        return
-
-    instruments = [k for k in cone.keys() if k != "portfolio"]
-    all_names = ["portfolio"] + instruments
+    selected_instr = st.selectbox("Select Instrument", all_instruments, index=0 if "portfolio" not in all_instruments else all_instruments.index("portfolio"))
 
     fig = go.Figure()
-    colors = {"portfolio": "black"}
+    color_map = {"portfolio": "#000000"}
     default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    color = color_map.get(selected_instr, default_colors[all_instruments.index(selected_instr) % len(default_colors)])
 
-    for idx, name in enumerate(all_names):
-        data = cone.get(name)
-        if not data:
-            continue
-        color = colors.get(name, default_colors[idx % len(default_colors)])
+    x_labels = [str(h) for h in horizons]
+    p5_vals, p25_vals, p50_vals, p75_vals, p95_vals, current_vals = [], [], [], [], [], []
+    x_current = []
 
-        # Fan chart: p5-p95 as shaded area, p25-p75 as darker area, p50 as line
-        x_labels = ["p5", "p25", "p50", "p75", "p95"]
-        y_values = [data.get(x, 0) for x in x_labels]
+    for h in horizons:
+        data = vol_cones[h].get(selected_instr)
+        if data:
+            p5_vals.append(data.get("p5", 0))
+            p25_vals.append(data.get("p25", 0))
+            p50_vals.append(data.get("p50", 0))
+            p75_vals.append(data.get("p75", 0))
+            p95_vals.append(data.get("p95", 0))
+            if data.get("current") is not None:
+                current_vals.append(data["current"])
+                x_current.append(str(h))
 
-        # Outer band (p5-p95)
+    def hex_to_rgba(hex_color, alpha):
+        hex_color = hex_color.lstrip("#")
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
+    # Outer band (p5-p95)
+    fig.add_trace(go.Scatter(
+        x=x_labels + x_labels[::-1],
+        y=p5_vals + p95_vals[::-1],
+        fill="toself", fillcolor=hex_to_rgba(color, 0.15),
+        line=dict(color=color, width=0),
+        name=f"{selected_instr} (p5-p95)", showlegend=True,
+        hoverinfo="skip"
+    ))
+
+    # Inner band (p25-p75)
+    fig.add_trace(go.Scatter(
+        x=x_labels + x_labels[::-1],
+        y=p25_vals + p75_vals[::-1],
+        fill="toself", fillcolor=hex_to_rgba(color, 0.3),
+        line=dict(color=color, width=0),
+        name=f"{selected_instr} (p25-p75)", showlegend=False,
+        hoverinfo="skip"
+    ))
+
+    # Median line
+    fig.add_trace(go.Scatter(
+        x=x_labels, y=p50_vals,
+        line=dict(color=color, width=2),
+        name=f"{selected_instr} Median", showlegend=True
+    ))
+
+    # Current vol markers
+    if current_vals:
         fig.add_trace(go.Scatter(
-            x=x_labels, y=y_values,
-            fill="toself", fillcolor=f"{color}20",
-            line=dict(color=color, width=0),
-            name=f"{name} (p5-p95)", showlegend=(idx == 0),
-            hoverinfo="skip"
+            x=x_current, y=current_vals,
+            mode="markers", marker=dict(color=color, size=8, symbol="diamond"),
+            name=f"{selected_instr} (current)", showlegend=True
         ))
-
-        # Inner band (p25-p75)
-        fig.add_trace(go.Scatter(
-            x=["p25", "p50", "p75"], y=[data.get("p25", 0), data.get("p50", 0), data.get("p75", 0)],
-            fill="toself", fillcolor=f"{color}40",
-            line=dict(color=color, width=0),
-            name=f"{name} (p25-p75)", showlegend=False,
-            hoverinfo="skip"
-        ))
-
-        # Median line
-        fig.add_trace(go.Scatter(
-            x=x_labels, y=y_values,
-            line=dict(color=color, width=2),
-            name=name, showlegend=True
-        ))
-
-        # Current vol marker
-        current = data.get("current")
-        if current is not None:
-            fig.add_trace(go.Scatter(
-                x=["current"], y=[current],
-                mode="markers", marker=dict(color=color, size=10, symbol="diamond"),
-                name=f"{name} (current)", showlegend=False
-            ))
 
     fig.update_layout(
-        title=f"Volatility Cone ({selected_horizon}-day realized vol percentiles)",
-        xaxis_title="Percentile",
+        title=f"Volatility Cone: {selected_instr}",
+        xaxis_title="Lookback Horizon (days)",
         yaxis_title="Annualized Volatility (%)",
         height=450,
         showlegend=True,

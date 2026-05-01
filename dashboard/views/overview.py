@@ -97,10 +97,8 @@ def _return_distributions(returns_data: dict):
 def _plot_return_histogram(returns: pd.Series, name: str):
     fig = go.Figure()
 
-    # Histogram
     fig.add_trace(go.Histogram(x=returns.values, nbinsx=50, name=name, marker_color="#1f77b4", opacity=0.7, histnorm="probability density"))
 
-    # KDE approximation using rolling mean of histogram
     sorted_vals = np.sort(returns.values)
     kde_x = np.linspace(sorted_vals.min(), sorted_vals.max(), 200)
     bandwidth = returns.std() * 1.06 * len(returns) ** (-0.2)
@@ -111,11 +109,13 @@ def _plot_return_histogram(returns: pd.Series, name: str):
 
     fig.add_trace(go.Scatter(x=kde_x, y=kde_y, mode="lines", name="KDE", line=dict(color="#ff7f0e", width=2)))
 
-    # Normal distribution overlay
     mean = returns.mean()
     std = returns.std()
     normal_y = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((kde_x - mean) / std) ** 2)
     fig.add_trace(go.Scatter(x=kde_x, y=normal_y, mode="lines", name="Normal", line=dict(color="red", width=1.5, dash="dash")))
+
+    fig.add_vline(x=mean, line_dash="dot", line_color="red", annotation_text="Mean", annotation_position="top right")
+    fig.add_vline(x=returns.median(), line_dash="solid", line_color="black", annotation_text="Median", annotation_position="top left")
 
     fig.update_layout(
         title=f"Return Distribution: {name}",
