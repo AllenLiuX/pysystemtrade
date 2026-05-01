@@ -34,6 +34,9 @@ class AHData(SystemStage):
     def name(self):
         return "ah_data"
 
+    def __init__(self):
+        self._ah_mapping = None
+
     def _load_ah_mapping(self) -> Dict[str, str]:
         """
         Load A+H pair mapping into a bidirectional dict.
@@ -42,6 +45,8 @@ class AHData(SystemStage):
             Dict mapping instrument_code -> paired_instrument_code
             e.g. {'601318.SH': '02318.HK', '02318.HK': '601318.SH'}
         """
+        if self._ah_mapping is not None:
+            return self._ah_mapping
         from sysdata.astock.akshare_client import AkshareClient
 
         pairs = AkshareClient.get_ah_pairs()
@@ -50,6 +55,7 @@ class AHData(SystemStage):
             h_full = h_code + ".HK"
             mapping[a_code] = h_full
             mapping[h_full] = a_code
+        self._ah_mapping = mapping
         return mapping
 
     def get_ah_pair_code(self, instrument_code: str) -> Optional[str]:
@@ -111,7 +117,8 @@ class AHData(SystemStage):
         try:
             a_prices = self.parent.rawdata.get_daily_prices(a_code)
             h_prices = self.parent.rawdata.get_daily_prices(h_code)
-        except Exception:
+        except Exception as e:
+            self.log.warning("Failed to fetch prices for %s/%s: %s", a_code, h_code, e)
             return pd.Series(dtype=float)
 
         if a_prices.empty or h_prices.empty:
