@@ -23,9 +23,18 @@ def _instrument_table(instr_metrics: dict):
     st.subheader("Per-Instrument Performance")
     rows = []
     for instr, m in instr_metrics.items():
-        rows.append({"Instrument": instr, "Total Return (%)": m.get("total_return", 0), "Ann. Return (%)": m.get("annualized_return", 0), "Ann. Vol (%)": m.get("annualized_vol", 0), "Sharpe": m.get("sharpe", 0), "Max Drawdown (%)": m.get("max_drawdown", 0)})
+        row = {
+            "Instrument": instr,
+            "Total Return (%)": m.get("total_return", 0),
+            "Ann. Return (%)": m.get("annualized_return", 0),
+            "Ann. Vol (%)": m.get("annualized_vol", 0),
+            "Sharpe": m.get("sharpe", 0),
+            "Max Drawdown (%)": m.get("max_drawdown", 0),
+        }
+        rows.append(row)
     df = pd.DataFrame(rows)
-    st.dataframe(df.style.format("{:.2f}"), use_container_width=True)
+    numeric_cols = df.select_dtypes(include="number").columns
+    st.dataframe(df.style.format({c: "{:.2f}" for c in numeric_cols}), use_container_width=True)
 
 
 def _price_chart(metrics: dict):

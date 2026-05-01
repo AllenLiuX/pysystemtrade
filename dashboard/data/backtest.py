@@ -16,7 +16,7 @@ from systems.portfolio import Portfolios
 
 logger = logging.getLogger(__name__)
 
-TRADING_DAYS_PER_YEAR = 252
+TRADING_DAYS_PER_YEAR = 242
 
 
 def run_backtest(
@@ -58,6 +58,14 @@ def run_backtest(
     config.instruments = valid_instruments
     config.notional_trading_capital = capital
 
+    # Find common start date — latest first date among all instruments
+    common_start = None
+    for instr in valid_instruments:
+        prices = data.get_raw_price(instr)
+        if not prices.empty:
+            first = prices.index[0]
+            common_start = max(common_start, first) if common_start else first
+
     rules = Rules({"long_only": TradingRule(long_only)})
 
     # Calculate rolling risk parity weights
@@ -79,6 +87,10 @@ def run_backtest(
     # Extract metrics
     equity_curve = system.accounts.portfolio().curve() + capital
 
+    # Trim to common start date (when all instruments have data)
+    if common_start is not None:
+        equity_curve = equity_curve[equity_curve.index >= common_start]
+
     # Compute equal-weight equity analytically from per-instrument P&L
     # Eliminates the need for a second full System (~50% time savings)
     instr_equities = []
@@ -89,7 +101,11 @@ def run_backtest(
             instr_equities.append(instr_curve + instr_capital)
 
     if instr_equities:
-        equal_equity = pd.DataFrame(instr_equities).mean(axis=1)
+        eq_df = pd.DataFrame({
+            valid_instruments[i]: instr_equities[i]
+            for i in range(len(valid_instruments))
+        }).dropna()
+        equal_equity = eq_df.mean(axis=1)
         equal_equity = equal_equity.reindex(equity_curve.index).ffill()
     else:
         equal_equity = equity_curve.copy()
