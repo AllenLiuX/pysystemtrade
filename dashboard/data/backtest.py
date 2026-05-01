@@ -174,7 +174,7 @@ def _calc_rolling_weights(data, instruments: list[str], vol_lookback: int) -> pd
     returns_df = pd.DataFrame(returns_dict).dropna()
 
     all_dates = returns_df.index
-    month_freq = "ME" if int(pd.__version__.split(".")[0]) >= 3 else "M"
+    month_freq = "M"
     monthly_dates = all_dates.to_frame().set_index(
         all_dates.to_period(month_freq).to_timestamp()
     ).index.unique()
