@@ -175,7 +175,7 @@ def _calc_rolling_weights(data, instruments: list[str], vol_lookback: int) -> pd
 
     all_dates = returns_df.index
     monthly_dates = all_dates.to_frame().set_index(
-        all_dates.to_period("M").to_timestamp()
+        all_dates.to_period("ME").to_timestamp()
     ).index.unique()
 
     rolling_weights_list = []
