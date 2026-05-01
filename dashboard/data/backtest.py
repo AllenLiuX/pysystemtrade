@@ -92,20 +92,19 @@ def run_backtest(
         equity_curve = equity_curve[equity_curve.index >= common_start]
 
     # Compute equal-weight equity analytically from per-instrument P&L
-    # Eliminates the need for a second full System (~50% time savings)
-    instr_equities = []
+    # Equal-weight = mean of N equally-weighted instrument returns, compounded from capital
+    instr_daily_returns = []
     for instr in valid_instruments:
         instr_curve = system.accounts.pandl_for_instrument(instr).curve()
         if len(instr_curve) > 0:
             instr_capital = capital / len(valid_instruments)
-            instr_equities.append(instr_curve + instr_capital)
+            instr_equity = instr_curve + instr_capital
+            instr_daily_returns.append(instr_equity.pct_change().dropna())
 
-    if instr_equities:
-        eq_df = pd.DataFrame({
-            valid_instruments[i]: instr_equities[i]
-            for i in range(len(valid_instruments))
-        }).dropna()
-        equal_equity = eq_df.mean(axis=1)
+    if instr_daily_returns:
+        returns_df = pd.DataFrame(instr_daily_returns).dropna()
+        daily_portfolio_return = returns_df.mean(axis=1)
+        equal_equity = (1 + daily_portfolio_return).cumprod() * capital
         equal_equity = equal_equity.reindex(equity_curve.index).ffill()
     else:
         equal_equity = equity_curve.copy()
