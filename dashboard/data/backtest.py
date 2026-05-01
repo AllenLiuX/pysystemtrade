@@ -91,8 +91,7 @@ def run_backtest(
     if common_start is not None:
         equity_curve = equity_curve[equity_curve.index >= common_start]
 
-    # Compute equal-weight equity analytically from per-instrument P&L
-    # Equal-weight = mean of N equally-weighted instrument returns, compounded from capital
+    # Compute equal-weight equity with monthly rebalancing
     instr_daily_returns = {}
     for instr in valid_instruments:
         instr_curve = system.accounts.pandl_for_instrument(instr).curve()
@@ -103,17 +102,12 @@ def run_backtest(
 
     if instr_daily_returns:
         returns_df = pd.DataFrame(instr_daily_returns).dropna()
-        daily_portfolio_return = returns_df.mean(axis=1)
-        # Normalize cumulative product to start at 1.0, then scale to capital
-        cum_prod = (1 + daily_portfolio_return).cumprod()
-        cum_prod = cum_prod / cum_prod.iloc[0]
-        # Prepend 1.0 at the start of equity_curve index so ffill covers all dates
-        start_date = equity_curve.index[0]
-        cum_prod = pd.concat([pd.Series([1.0], index=[start_date]), cum_prod])
-        cum_prod = cum_prod[~cum_prod.index.duplicated(keep="first")]
-        equal_equity = cum_prod.reindex(equity_curve.index).ffill() * capital
+        equal_equity, ew_weights = _calc_monthly_rebalanced_equity(
+            returns_df, equity_curve.index, capital
+        )
     else:
         equal_equity = equity_curve.copy()
+        ew_weights = pd.DataFrame()
 
     returns = equity_curve.pct_change().dropna()
     equal_returns = equal_equity.pct_change().dropna()
@@ -134,11 +128,24 @@ def run_backtest(
             instr_returns = instr_equity.pct_change().dropna()
             instr_metrics[instr] = _calc_performance(instr_equity, instr_returns)
 
-    # Volatility
-    vol_data = _calc_volatility(system, valid_instruments, equity_curve, capital)
+    # Volatility (multiple lookbacks)
+    vol_lookbacks = [5, 21, 63, 126]
+    vol_data = _calc_volatility(system, valid_instruments, equity_curve, capital, vol_lookbacks)
 
-    # Equal-weight weights (drifting buy-and-hold, not constant 1/N)
-    ew_weights = _calc_equal_weight_drifting_weights(system, valid_instruments, equity_curve, capital)
+    # Volatility cones
+    vol_cones = _calc_volatility_cones(system, valid_instruments, equity_curve, capital)
+
+    # Return distributions
+    returns_data = {
+        "portfolio": returns,
+        "equal_weight": equal_returns,
+    }
+    for instr in valid_instruments:
+        instr_curve = system.accounts.pandl_for_instrument(instr).curve()
+        if len(instr_curve) > 0:
+            instr_capital = capital / len(valid_instruments)
+            instr_equity = instr_curve + instr_capital
+            returns_data[instr] = instr_equity.pct_change().dropna()
 
     # Volume data for price charts
     volume_data = _get_volume_data(data, valid_instruments, common_start)
@@ -150,6 +157,9 @@ def run_backtest(
         "rolling_weights": _extract_rolling_recalc_points(daily_weights, valid_instruments),
         "equal_weight_weights": ew_weights,
         "volatility": vol_data,
+        "volatility_cones": vol_cones,
+        "vol_lookbacks": vol_lookbacks,
+        "returns": returns_data,
         "performance": performance,
         "equal_performance": equal_performance,
         "instruments": instr_metrics,
@@ -266,25 +276,40 @@ def _calc_performance(equity_curve: pd.Series, returns: pd.Series) -> dict:
     }
 
 
-def _calc_volatility(system, instruments, equity_curve, capital) -> pd.DataFrame:
-    """Calculate rolling volatility for portfolio and instruments."""
-    window = 21
+def _calc_volatility(system, instruments, equity_curve, capital, lookbacks: list[int] = None) -> dict:
+    """Calculate rolling volatility for portfolio and instruments at multiple lookbacks.
+    
+    Returns dict mapping lookback days -> DataFrame with portfolio + instrument vols.
+    """
+    if lookbacks is None:
+        lookbacks = [21]
+    
     portfolio_returns = equity_curve.pct_change().dropna()
-    portfolio_vol = portfolio_returns.rolling(window=window).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
-
-    vol_dict = {"portfolio": portfolio_vol}
+    
+    # Precompute instrument returns
+    instr_returns_dict = {}
     for instr in instruments:
         try:
             instr_curve = system.accounts.pandl_for_instrument(instr).curve()
             instr_capital = capital / len(instruments)
             instr_equity = instr_curve + instr_capital
-            instr_returns = instr_equity.pct_change().dropna()
-            instr_vol = instr_returns.rolling(window=window).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
-            vol_dict[instr] = instr_vol
+            instr_returns_dict[instr] = instr_equity.pct_change().dropna()
         except Exception:
             pass
-
-    return pd.DataFrame(vol_dict)
+    
+    result = {}
+    for window in lookbacks:
+        vol_dict = {}
+        portfolio_vol = portfolio_returns.rolling(window=window).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
+        vol_dict["portfolio"] = portfolio_vol
+        
+        for instr, instr_returns in instr_returns_dict.items():
+            instr_vol = instr_returns.rolling(window=window).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
+            vol_dict[instr] = instr_vol
+        
+        result[window] = pd.DataFrame(vol_dict)
+    
+    return result
 
 
 def _extract_rolling_recalc_points(daily_weights, instruments) -> pd.DataFrame:
@@ -328,22 +353,60 @@ def _get_forecasts(system, instruments) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _calc_equal_weight_drifting_weights(system, instruments: list[str], equity_curve: pd.Series, capital: float) -> pd.DataFrame:
-    """Compute drifting buy-and-hold equal-weight weights from per-instrument equity curves."""
-    instr_equities = {}
-    for instr in instruments:
-        instr_curve = system.accounts.pandl_for_instrument(instr).curve()
-        if len(instr_curve) > 0:
-            instr_capital = capital / len(instruments)
-            instr_equities[instr] = instr_curve + instr_capital
-
-    if not instr_equities:
-        return pd.DataFrame()
-
-    eq_df = pd.DataFrame(instr_equities).dropna()
-    total_equity = eq_df.sum(axis=1)
-    weights = eq_df.div(total_equity, axis=0)
-    return weights.reindex(equity_curve.index).ffill()
+def _calc_monthly_rebalanced_equity(returns_df: pd.DataFrame, target_index: pd.DatetimeIndex, capital: float):
+    """
+    Simulate monthly-rebalanced equal-weight portfolio.
+    
+    At each month-end, rebalance all instrument allocations to equal dollar amounts.
+    Between rebalances, weights drift based on relative performance.
+    
+    Returns:
+        equal_equity: Series of portfolio value over time
+        ew_weights: DataFrame of actual weights at each point in time
+    """
+    instruments = list(returns_df.columns)
+    n = len(instruments)
+    
+    # Get monthly rebalance dates from the returns index
+    all_dates = returns_df.index
+    monthly_dates = all_dates.to_frame().set_index(
+        all_dates.to_period("M").to_timestamp()
+    ).index.unique()
+    
+    # Build a set of rebalance dates for fast lookup
+    rebalance_set = set(monthly_dates[1:])  # Skip first month
+    
+    # Initialize: equal capital per instrument
+    instr_equity = {instr: capital / n for instr in instruments}
+    
+    equity_values = []
+    weight_rows = []
+    
+    for date in target_index:
+        if date in rebalance_set:
+            # Rebalance: compute total, redistribute equally
+            total = sum(instr_equity.values())
+            for instr in instruments:
+                instr_equity[instr] = total / n
+        
+        # Apply daily returns for this date (if available)
+        if date in returns_df.index:
+            for instr in instruments:
+                ret = returns_df.loc[date, instr]
+                if not pd.isna(ret):
+                    instr_equity[instr] *= (1 + ret)
+        
+        total_equity = sum(instr_equity.values())
+        equity_values.append(total_equity)
+        
+        weights = {instr: instr_equity[instr] / total_equity if total_equity > 0 else 1/n 
+                   for instr in instruments}
+        weight_rows.append(weights)
+    
+    equal_equity = pd.Series(equity_values, index=target_index)
+    ew_weights = pd.DataFrame(weight_rows, index=target_index)
+    
+    return equal_equity, ew_weights
 
 
 def _get_volume_data(data, instruments: list[str], common_start) -> dict:
@@ -360,3 +423,54 @@ def _get_volume_data(data, instruments: list[str], common_start) -> dict:
         except Exception:
             pass
     return volume
+
+
+def _calc_volatility_cones(system, instruments, equity_curve, capital, horizons: list[int] = None) -> dict:
+    """
+    Compute realized volatility cones for portfolio and instruments.
+    
+    For each horizon (e.g., 5, 10, 20, 60, 120 days), computes rolling realized
+    volatility over the entire history, then builds percentile cones (5th, 25th, 50th, 75th, 95th).
+    
+    Returns dict: {horizon: {"portfolio": {percentile: value}, "instrument": {...}, ...}}
+    """
+    if horizons is None:
+        horizons = [5, 10, 20, 60, 120]
+    
+    portfolio_returns = equity_curve.pct_change().dropna()
+    
+    # Precompute instrument returns
+    instr_returns_dict = {}
+    for instr in instruments:
+        try:
+            instr_curve = system.accounts.pandl_for_instrument(instr).curve()
+            instr_capital = capital / len(instruments)
+            instr_equity = instr_curve + instr_capital
+            instr_returns_dict[instr] = instr_equity.pct_change().dropna()
+        except Exception:
+            pass
+    
+    percentiles = [5, 25, 50, 75, 95]
+    result = {}
+    
+    for horizon in horizons:
+        cone = {}
+        
+        # Portfolio cone
+        port_vol = portfolio_returns.rolling(window=horizon).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
+        port_vol = port_vol.dropna()
+        if len(port_vol) > 0:
+            cone["portfolio"] = {f"p{p}": port_vol.quantile(p / 100) for p in percentiles}
+            cone["portfolio"]["current"] = port_vol.iloc[-1] if len(port_vol) > 0 else None
+        
+        # Instrument cones
+        for instr, instr_returns in instr_returns_dict.items():
+            instr_vol = instr_returns.rolling(window=horizon).std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100
+            instr_vol = instr_vol.dropna()
+            if len(instr_vol) > 0:
+                cone[instr] = {f"p{p}": instr_vol.quantile(p / 100) for p in percentiles}
+                cone[instr]["current"] = instr_vol.iloc[-1] if len(instr_vol) > 0 else None
+        
+        result[horizon] = cone
+    
+    return result
