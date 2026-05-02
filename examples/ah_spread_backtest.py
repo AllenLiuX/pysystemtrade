@@ -861,6 +861,93 @@ else:
     print("Could not compute normalized pair P&L")
 
 # %% [markdown]
+# ## Sharpe Ratio vs Volume
+#
+# Scatter plot showing the relationship between instrument liquidity (average daily volume)
+# and risk-adjusted performance (Sharpe ratio).
+
+# %%
+print("=" * 60)
+print("SHARPE RATIO vs VOLUME ANALYSIS")
+print("=" * 60)
+
+sharpe_data = []
+for instr in full_instruments:
+    try:
+        pnl_curve = full_system.accounts.pandl_for_instrument(instr).curve()
+        if len(pnl_curve) < 30:
+            continue
+
+        returns = pnl_curve.pct_change().dropna()
+        if len(returns) < 30 or returns.std() == 0:
+            continue
+
+        ann_return = returns.mean() * 252
+        ann_vol = returns.std() * np.sqrt(252)
+        sharpe = ann_return / ann_vol if ann_vol > 0 else 0
+
+        # Get average volume
+        prices = data.get_raw_price(instr)
+        if prices is None or len(prices) < 60:
+            continue
+
+        avg_volume = prices.iloc[-60:].mean()
+
+        is_a = instr.endswith(".SH") or instr.endswith(".SZ")
+        sharpe_data.append({
+            "instrument": instr,
+            "sharpe": sharpe,
+            "avg_volume": avg_volume,
+            "is_a": is_a,
+        })
+    except Exception:
+        continue
+
+if sharpe_data:
+    sharpe_df = pd.DataFrame(sharpe_data)
+
+    print(f"\nInstruments with valid data: {len(sharpe_df)}")
+    print(f"Sharpe ratio range: [{sharpe_df['sharpe'].min():.2f}, {sharpe_df['sharpe'].max():.2f}]")
+    print(f"Avg volume range: [{sharpe_df['avg_volume'].min():,.0f}, {sharpe_df['avg_volume'].max():,.0f}]")
+
+    # Scatter plot
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    a_mask = sharpe_df["is_a"]
+    ax.scatter(sharpe_df.loc[a_mask, "avg_volume"], sharpe_df.loc[a_mask, "sharpe"],
+               color="red", alpha=0.6, s=50, label="A-shares", edgecolors="darkred", linewidths=0.5)
+    ax.scatter(sharpe_df.loc[~a_mask, "avg_volume"], sharpe_df.loc[~a_mask, "sharpe"],
+               color="blue", alpha=0.6, s=50, label="H-shares", edgecolors="darkblue", linewidths=0.5)
+
+    ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Average Daily Volume (last 60 days)")
+    ax.set_ylabel("Sharpe Ratio (annualized)")
+    ax.set_title("Sharpe Ratio vs Average Volume by Instrument")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Correlation
+    corr = sharpe_df["avg_volume"].corr(sharpe_df["sharpe"])
+    print(f"\nCorrelation (volume vs Sharpe): {corr:.4f}")
+
+    # Top/bottom Sharpe
+    top_sharpe = sharpe_df.nlargest(10, "sharpe")
+    bottom_sharpe = sharpe_df.nsmallest(10, "sharpe")
+
+    print(f"\nTop 10 by Sharpe:")
+    for _, row in top_sharpe.iterrows():
+        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Volume: {row['avg_volume']:>12,.0f}")
+
+    print(f"\nBottom 10 by Sharpe:")
+    for _, row in bottom_sharpe.iterrows():
+        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Volume: {row['avg_volume']:>12,.0f}")
+else:
+    print("Insufficient data for Sharpe vs Volume analysis")
+
+# %% [markdown]
 # ## Forecast Analysis
 #
 # Examining the distribution, turnover, and extremity of forecast signals.
