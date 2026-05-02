@@ -286,3 +286,138 @@ class TestGetAhSpreadZscore:
             zscore_a.loc[common],
             -zscore_h.loc[common]
         )
+
+
+class TestAHPairNormalizedPosition:
+    """Tests for get_ah_pair_normalized_position method."""
+
+    def _make_mock_system_with_positions(self, a_prices, h_prices, a_positions, h_positions):
+        """Create a mock system with controlled price data and raw positions."""
+        price_data = {
+            "601318.SH": make_price_series(a_prices),
+            "02318.HK": make_price_series(h_prices),
+        }
+        system = MockSystem(price_data)
+
+        class MockPositionSize:
+            def __init__(self, pos_a, pos_h):
+                self._pos_a = pos_a
+                self._pos_h = pos_h
+
+            def get_subsystem_position(self, instrument_code):
+                if instrument_code == "601318.SH":
+                    return self._pos_a
+                return self._pos_h
+
+        system.positionSize = MockPositionSize(
+            pd.Series(a_positions, index=pd.bdate_range("2026-01-01", periods=len(a_positions))),
+            pd.Series(h_positions, index=pd.bdate_range("2026-01-01", periods=len(h_positions))),
+        )
+        return system
+
+    def test_normalized_positions_are_dollar_neutral(self):
+        """Normalized positions satisfy pos_A + pos_H = 0."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [1.0, 1.2, 1.5, 1.3, 1.1, 1.4, 1.6, 1.2, 1.0, 0.8,
+                 1.1, 1.3, 1.5, 1.7, 1.4, 1.2, 1.0, 0.9, 1.1, 1.3,
+                 1.5, 1.2, 1.0, 0.8, 1.1, 1.4]
+        h_pos = [-0.8, -1.0, -1.2, -1.1, -0.9, -1.1, -1.3, -1.0, -0.8, -0.6,
+                 -0.9, -1.1, -1.2, -1.4, -1.1, -1.0, -0.8, -0.7, -0.9, -1.1,
+                 -1.2, -1.0, -0.8, -0.6, -0.9, -1.1]
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_a = system.ah_data.get_ah_pair_normalized_position("601318.SH")
+        norm_h = system.ah_data.get_ah_pair_normalized_position("02318.HK")
+
+        assert (norm_a + norm_h).abs().max() < 1e-10
+
+    def test_normalized_positions_have_equal_magnitude(self):
+        """|pos_A| == |pos_H| after normalization."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [1.0, 1.5, 2.0, 1.5, 1.0, 1.5, 2.0, 1.5, 1.0, 0.5,
+                 1.0, 1.5, 2.0, 2.5, 2.0, 1.5, 1.0, 0.5, 1.0, 1.5,
+                 2.0, 1.5, 1.0, 0.5, 1.0, 1.5]
+        h_pos = [-0.5, -0.75, -1.0, -0.75, -0.5, -0.75, -1.0, -0.75, -0.5, -0.25,
+                 -0.5, -0.75, -1.0, -1.25, -1.0, -0.75, -0.5, -0.25, -0.5, -0.75,
+                 -1.0, -0.75, -0.5, -0.25, -0.5, -0.75]
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_a = system.ah_data.get_ah_pair_normalized_position("601318.SH")
+        norm_h = system.ah_data.get_ah_pair_normalized_position("02318.HK")
+
+        pd.testing.assert_series_equal(norm_a.abs(), norm_h.abs())
+
+    def test_normalized_position_uses_average_magnitude(self):
+        """Normalized position magnitude is average of |pos_A| and |pos_H|."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [2.0] * len(a_prices)
+        h_pos = [-1.0] * len(a_prices)
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_a = system.ah_data.get_ah_pair_normalized_position("601318.SH")
+
+        expected = pd.Series([1.5] * len(a_prices), index=pd.bdate_range("2026-01-01", periods=len(a_prices)))
+        pd.testing.assert_series_equal(norm_a, expected)
+
+    def test_normalized_position_preserves_a_share_direction(self):
+        """Normalized position direction follows A-share's raw position sign."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [-1.5] * len(a_prices)
+        h_pos = [-1.0] * len(a_prices)
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_a = system.ah_data.get_ah_pair_normalized_position("601318.SH")
+        norm_h = system.ah_data.get_ah_pair_normalized_position("02318.HK")
+
+        assert (norm_a < 0).all()
+        assert (norm_h > 0).all()
+
+    def test_normalized_position_handles_zero_positions(self):
+        """Zero positions on both legs result in zero normalized position."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [0.0] * len(a_prices)
+        h_pos = [0.0] * len(a_prices)
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_a = system.ah_data.get_ah_pair_normalized_position("601318.SH")
+        assert (norm_a == 0.0).all()
+
+    def test_normalized_position_for_non_ah_returns_empty(self):
+        """Non-AH instrument returns empty series."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [1.0] * len(a_prices)
+        h_pos = [-1.0] * len(a_prices)
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        result = system.ah_data.get_ah_pair_normalized_position("000001.SZ")
+        assert result.empty

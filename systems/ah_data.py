@@ -193,3 +193,54 @@ class AHData(SystemStage):
         if instrument_code.endswith(".HK"):
             return -zscore
         return zscore
+
+    @diagnostic()
+    def get_ah_pair_normalized_position(self, instrument_code: str) -> pd.Series:
+        """
+        Get dollar-neutral normalized position for an AH pair.
+
+        Computes the average absolute position of both legs and enforces:
+        - pos_A = avg(|pos_A|, |pos_H|) * sign(pos_A)
+        - pos_H = -pos_A
+
+        :param instrument_code: A-share or H-share code
+        :returns: pd.Series with normalized position, NaN for non-AH instruments
+        """
+        pair_code = self.get_ah_pair_code(instrument_code)
+        if pair_code is None:
+            return pd.Series(dtype=float)
+
+        if instrument_code.endswith(".HK"):
+            h_code = instrument_code
+            a_code = pair_code
+        else:
+            a_code = instrument_code
+            h_code = pair_code
+
+        try:
+            pos_a = self.parent.positionSize.get_subsystem_position(a_code)
+            pos_h = self.parent.positionSize.get_subsystem_position(h_code)
+        except Exception as e:
+            self.log.warning("Failed to get positions for %s/%s: %s", a_code, h_code, e)
+            return pd.Series(dtype=float)
+
+        if pos_a.empty or pos_h.empty:
+            return pd.Series(dtype=float)
+
+        common_dates = pos_a.index.intersection(pos_h.index)
+        if len(common_dates) == 0:
+            return pd.Series(dtype=float)
+
+        pos_a = pos_a.loc[common_dates]
+        pos_h = pos_h.loc[common_dates]
+
+        avg_abs = (pos_a.abs() + pos_h.abs()) / 2.0
+
+        sign_a = pos_a.apply(lambda x: 1 if x >= 0 else -1)
+
+        norm_a = avg_abs * sign_a
+        norm_h = -norm_a
+
+        if instrument_code.endswith(".HK"):
+            return norm_h
+        return norm_a
