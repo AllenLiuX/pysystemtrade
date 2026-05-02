@@ -11,8 +11,17 @@ Tests cover:
 import pytest
 import pandas as pd
 import numpy as np
+from unittest.mock import patch
 
 from systems.ah_data import AHData
+
+# Mock AH pairs for tests that need the mapping
+MOCK_AH_PAIRS = [
+    ("601318.SH", "02318"),
+    ("600036.SH", "03968"),
+    ("601398.SH", "01398"),
+    ("601288.SH", "01288"),
+]
 
 
 class MockCache:
@@ -68,25 +77,29 @@ def make_price_series(values: list, start_date: str = "2026-01-01") -> pd.Series
 class TestGetAhPairCode:
     """Tests for get_ah_pair_code method."""
 
-    def test_a_to_h_lookup(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_a_to_h_lookup(self, mock_pairs):
         """A-share code returns H-share code."""
         ah_data = AHData()
         result = ah_data.get_ah_pair_code("601318.SH")
         assert result == "02318.HK"
 
-    def test_h_to_a_lookup(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_h_to_a_lookup(self, mock_pairs):
         """H-share code returns A-share code."""
         ah_data = AHData()
         result = ah_data.get_ah_pair_code("02318.HK")
         assert result == "601318.SH"
 
-    def test_non_ah_instrument_returns_none(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_non_ah_instrument_returns_none(self, mock_pairs):
         """Non-AH instrument returns None."""
         ah_data = AHData()
         result = ah_data.get_ah_pair_code("000001.SZ")
         assert result is None
 
-    def test_multiple_pairs(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_multiple_pairs(self, mock_pairs):
         """Multiple known pairs resolve correctly."""
         ah_data = AHData()
         pairs = [
@@ -102,7 +115,8 @@ class TestGetAhPairCode:
 class TestGetListOfAhInstruments:
     """Tests for get_list_of_ah_instruments method."""
 
-    def test_returns_sorted_list(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_returns_sorted_list(self, mock_pairs):
         """Returns a sorted list of instrument codes."""
         ah_data = AHData()
         instruments = ah_data.get_list_of_ah_instruments()
@@ -110,7 +124,8 @@ class TestGetListOfAhInstruments:
         assert len(instruments) > 0
         assert instruments == sorted(instruments)
 
-    def test_contains_both_a_and_h(self):
+    @patch("sysdata.astock.akshare_client.AkshareClient.get_ah_pairs", return_value=MOCK_AH_PAIRS)
+    def test_contains_both_a_and_h(self, mock_pairs):
         """List contains both A-share and H-share codes."""
         ah_data = AHData()
         instruments = ah_data.get_list_of_ah_instruments()

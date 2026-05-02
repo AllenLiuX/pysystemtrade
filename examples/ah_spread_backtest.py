@@ -65,7 +65,7 @@ import os
 from pathlib import Path
 
 
-project_root = Path(os.getcwd()).parent if "examples" in os.getcwd() else Path(os.getcwd())
+project_root = Path(os.getcwd()).parent if Path(os.getcwd()).name == "examples" else Path(os.getcwd())
 os.chdir(project_root)
 print(f"Working directory: {os.getcwd()}")
 
@@ -137,35 +137,35 @@ for a_code, h_code in pairs:
 print(f"Complete pairs (both legs have data): {len(pairs_with_data)}")
 
 # %%
-# Top 20 selection by liquidity (average daily volume)
-print("\nSelecting Top 20 pairs by average daily volume...")
+# Top 20 selection by average price (proxy for liquidity — volume data not available)
+print("\nSelecting Top 20 pairs by average price...")
 
-# Only preload A-share prices — H-shares not needed for volume proxy
+# Only preload A-share prices — H-shares not needed for price proxy
 a_codes_only = [a for a, _ in pairs_with_data]
 print(f"Preloading prices for {len(a_codes_only)} A-share instruments...")
 data.preload_prices(a_codes_only)
 print(f"Preloaded {len(data._price_cache)} instruments")
 
-# Vectorized volume calculation: last 60-day mean for all A-shares at once
-volume_data = {}
+# Vectorized price calculation: last 60-day mean for all A-shares at once
+price_data = {}
 for a_code in a_codes_only:
     a_prices = data._price_cache.get(a_code)
     if a_prices is not None and len(a_prices) > 60:
-        volume_data[a_code] = a_prices.iloc[-60:].mean()
+        price_data[a_code] = a_prices.iloc[-60:].mean()
 
-# Sort by volume and take top 20
-top_20_a = sorted(volume_data.keys(), key=lambda x: volume_data[x], reverse=True)[:20]
+# Sort by price and take top 20
+top_20_a = sorted(price_data.keys(), key=lambda x: price_data[x], reverse=True)[:20]
 
 # Reuse pairs mapping from earlier (line 112) — no need to refetch
-a_to_h = {a: h + ".HK" for a, h in pairs}
+a_to_h = {a: h + ".HK" for a, h in pairs_with_data}
 
 top_20_pairs_fixed = [(a, a_to_h[a]) for a in top_20_a if a in a_to_h]
 top_20_instruments = [code for pair in top_20_pairs_fixed for code in pair]
 
 print(f"Top 20 pairs selected:")
 for a, h in top_20_pairs_fixed:
-    vol = volume_data.get(a, 0)
-    print(f"  {a} / {h}: avg vol = {vol:,.0f}")
+    avg_price = price_data.get(a, 0)
+    print(f"  {a} / {h}: avg price = {avg_price:,.2f}")
 
 # %%
 # System builder function
@@ -290,7 +290,7 @@ def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
             short_prefix = "Short A" if is_a else "Short H"
 
             # Compute daily P&L from cumulative P&L
-            daily_pnl = pnl.diff().fillna(pnl.iloc[0] if len(pnl) > 0 else 0.0)
+            daily_pnl = pnl.diff().fillna(0.0)
 
             long_mask = pos_aligned > 0
             short_mask = pos_aligned < 0
@@ -307,7 +307,7 @@ def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
             combined = pd.DataFrame(daily_list).sum()
             result[bucket] = combined.cumsum()
         else:
-            result[bucket] = pd.Series(0.0)
+            result[bucket] = pd.Series(dtype=float)
 
     return result
 
@@ -698,18 +698,18 @@ for instr in full_instruments:
 
         sharpe = (daily_mean / daily_std) * np.sqrt(252)
 
-        # Get average volume
+        # Get average price (proxy for size/liquidity — volume data not available)
         prices = data.get_raw_price(instr)
         if prices is None or len(prices) < 60:
             continue
 
-        avg_volume = prices.iloc[-60:].mean()
+        avg_price = prices.iloc[-60:].mean()
 
         is_a = instr.endswith(".SH") or instr.endswith(".SZ")
         sharpe_data.append({
             "instrument": instr,
             "sharpe": sharpe,
-            "avg_volume": avg_volume,
+            "avg_price": avg_price,
             "is_a": is_a,
         })
     except Exception:
@@ -720,21 +720,21 @@ if sharpe_data:
 
     print(f"\nInstruments with valid data: {len(sharpe_df)}")
     print(f"Sharpe ratio range: [{sharpe_df['sharpe'].min():.2f}, {sharpe_df['sharpe'].max():.2f}]")
-    print(f"Avg volume range: [{sharpe_df['avg_volume'].min():,.0f}, {sharpe_df['avg_volume'].max():,.0f}]")
+    print(f"Avg price range: [{sharpe_df['avg_price'].min():,.2f}, {sharpe_df['avg_price'].max():,.2f}]")
 
     # Scatter plot
     fig, ax = plt.subplots(figsize=(12, 7))
 
     a_mask = sharpe_df["is_a"]
-    ax.scatter(sharpe_df.loc[a_mask, "avg_volume"], sharpe_df.loc[a_mask, "sharpe"],
+    ax.scatter(sharpe_df.loc[a_mask, "avg_price"], sharpe_df.loc[a_mask, "sharpe"],
                color="red", alpha=0.6, s=50, label="A-shares", edgecolors="darkred", linewidths=0.5)
-    ax.scatter(sharpe_df.loc[~a_mask, "avg_volume"], sharpe_df.loc[~a_mask, "sharpe"],
+    ax.scatter(sharpe_df.loc[~a_mask, "avg_price"], sharpe_df.loc[~a_mask, "sharpe"],
                color="blue", alpha=0.6, s=50, label="H-shares", edgecolors="darkblue", linewidths=0.5)
 
     ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
-    ax.set_xlabel("Average Daily Volume (last 60 days)")
+    ax.set_xlabel("Average Price (last 60 days)")
     ax.set_ylabel("Sharpe Ratio (annualized)")
-    ax.set_title("Sharpe Ratio vs Average Volume by Instrument")
+    ax.set_title("Sharpe Ratio vs Average Price by Instrument")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
 
@@ -742,8 +742,8 @@ if sharpe_data:
     plt.show()
 
     # Correlation
-    corr = sharpe_df["avg_volume"].corr(sharpe_df["sharpe"])
-    print(f"\nCorrelation (volume vs Sharpe): {corr:.4f}")
+    corr = sharpe_df["avg_price"].corr(sharpe_df["sharpe"])
+    print(f"\nCorrelation (price vs Sharpe): {corr:.4f}")
 
     # Top/bottom Sharpe
     top_sharpe = sharpe_df.nlargest(10, "sharpe")
@@ -751,13 +751,13 @@ if sharpe_data:
 
     print(f"\nTop 10 by Sharpe:")
     for _, row in top_sharpe.iterrows():
-        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Volume: {row['avg_volume']:>12,.0f}")
+        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Price: {row['avg_price']:>12,.2f}")
 
     print(f"\nBottom 10 by Sharpe:")
     for _, row in bottom_sharpe.iterrows():
-        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Volume: {row['avg_volume']:>12,.0f}")
+        print(f"  {row['instrument']:>12}  Sharpe: {row['sharpe']:>7.2f}  Price: {row['avg_price']:>12,.2f}")
 else:
-    print("Insufficient data for Sharpe vs Volume analysis")
+    print("Insufficient data for Sharpe vs Price analysis")
 
 # %% [markdown]
 # ## Forecast Analysis

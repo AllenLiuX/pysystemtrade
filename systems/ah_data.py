@@ -43,9 +43,13 @@ class AHData(SystemStage):
         """
         Cache daily prices to avoid redundant DB queries.
         Each instrument's price is fetched only once per AHData instance.
+        Failed fetches are cached as None to prevent repeated retries.
         """
         if instrument_code not in self._price_cache:
-            self._price_cache[instrument_code] = self.parent.rawdata.get_daily_prices(instrument_code)
+            try:
+                self._price_cache[instrument_code] = self.parent.rawdata.get_daily_prices(instrument_code)
+            except Exception:
+                self._price_cache[instrument_code] = None
         return self._price_cache[instrument_code]
 
     def _get_spread_for_pair(self, a_code: str, h_code: str) -> pd.Series:
@@ -60,6 +64,10 @@ class AHData(SystemStage):
                 h_prices = self._get_cached_price(h_code)
             except Exception as e:
                 self.log.warning("Failed to fetch prices for %s/%s: %s", a_code, h_code, e)
+                self._spread_cache[pair_key] = pd.Series(dtype=float)
+                return self._spread_cache[pair_key]
+
+            if a_prices is None or h_prices is None:
                 self._spread_cache[pair_key] = pd.Series(dtype=float)
                 return self._spread_cache[pair_key]
 
@@ -236,7 +244,7 @@ class AHData(SystemStage):
 
         avg_abs = (pos_a.abs() + pos_h.abs()) / 2.0
 
-        sign_a = pos_a.apply(lambda x: 1 if x >= 0 else -1)
+        sign_a = pos_a.apply(lambda x: 0 if x == 0 else (1 if x > 0 else -1))
 
         norm_a = avg_abs * sign_a
         norm_h = -norm_a
