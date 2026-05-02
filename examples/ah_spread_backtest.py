@@ -337,6 +337,9 @@ def calc_pair_normalized_pnl(system, pairs_list, data):
     Returns:
         Dict with per-pair equity curves and aggregate pair P&L
     """
+    if not pairs_list:
+        return {}, pd.Series(dtype=float)
+
     pair_pnl_curves = {}
     daily_pnl_series = []
 
