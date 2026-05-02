@@ -685,13 +685,18 @@ for instr in full_instruments:
         if len(pnl_curve) < 30:
             continue
 
-        returns = pnl_curve.pct_change().dropna()
-        if len(returns) < 30 or returns.std() == 0:
+        # Daily P&L from cumulative curve
+        daily_pnl = pnl_curve.diff().dropna()
+        # Skip first day's jump (initial P&L value)
+        if len(daily_pnl) < 30:
             continue
 
-        ann_return = returns.mean() * 252
-        ann_vol = returns.std() * np.sqrt(252)
-        sharpe = ann_return / ann_vol if ann_vol > 0 else 0
+        daily_mean = daily_pnl.mean()
+        daily_std = daily_pnl.std()
+        if daily_std == 0:
+            continue
+
+        sharpe = (daily_mean / daily_std) * np.sqrt(252)
 
         # Get average volume
         prices = data.get_raw_price(instr)
