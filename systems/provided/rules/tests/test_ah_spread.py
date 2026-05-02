@@ -68,3 +68,21 @@ class TestAhSpreadRule:
         result = ah_spread(zscore)
 
         assert (result > 0).all()
+
+    def test_a_and_h_forecasts_are_opposite_signed(self):
+        """
+        After ah_spread rule negation, A and H shares should have opposite-signed forecasts.
+
+        This tests the full pipeline:
+        - A-share z-score = +z → forecast = -z (negative)
+        - H-share z-score = -z → forecast = +z (positive)
+        """
+        zscore_a = pd.Series([2.0, 1.5, 1.0, 0.5],
+                            index=pd.bdate_range("2026-01-01", periods=4))
+        zscore_h = -zscore_a
+
+        forecast_a = ah_spread(zscore_a)
+        forecast_h = ah_spread(zscore_h)
+
+        assert (forecast_a * forecast_h < 0).all()
+        pd.testing.assert_series_equal(forecast_a, -forecast_h)
