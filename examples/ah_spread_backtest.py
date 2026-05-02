@@ -62,11 +62,13 @@
 # %%
 # Setup: Change to project root directory
 import os
+import sys
 from pathlib import Path
 
 
 project_root = Path(os.getcwd()).parent if Path(os.getcwd()).name == "examples" else Path(os.getcwd())
 os.chdir(project_root)
+sys.path.insert(0, str(project_root))
 print(f"Working directory: {os.getcwd()}")
 
 # %%
@@ -74,10 +76,15 @@ print(f"Working directory: {os.getcwd()}")
 import warnings
 warnings.filterwarnings("ignore")
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats
+
+# Handle Unicode encoding for Windows console
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # pysystemtrade imports
 from sysdata.sim.astock_sim_data import AStockSimData
@@ -112,7 +119,8 @@ print(f"Total A+H pairs in mapping: {len(pairs)}")
 all_instruments = []
 for a_code, h_code in pairs:
     all_instruments.append(a_code)
-    all_instruments.append(h_code + ".HK")
+    h_full = h_code if h_code.endswith(".HK") else h_code + ".HK"
+    all_instruments.append(h_full)
 
 print(f"Total instruments (A + H): {len(all_instruments)}")
 
@@ -130,7 +138,7 @@ print(f"Instruments with data: {len(instruments_with_data)} / {len(all_instrumen
 # Build pair-level availability
 pairs_with_data = []
 for a_code, h_code in pairs:
-    h_full = h_code + ".HK"
+    h_full = h_code if h_code.endswith(".HK") else h_code + ".HK"
     if a_code in available and h_full in available:
         pairs_with_data.append((a_code, h_full))
 
@@ -157,7 +165,7 @@ for a_code in a_codes_only:
 top_20_a = sorted(price_data.keys(), key=lambda x: price_data[x], reverse=True)[:20]
 
 # Reuse pairs mapping from earlier (line 112) — no need to refetch
-a_to_h = {a: h + ".HK" for a, h in pairs_with_data}
+a_to_h = {a: h for a, h in pairs_with_data}
 
 top_20_pairs_fixed = [(a, a_to_h[a]) for a in top_20_a if a in a_to_h]
 top_20_instruments = [code for pair in top_20_pairs_fixed for code in pair]
@@ -283,7 +291,7 @@ def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
                 continue
 
             # Reindex position to match P&L dates
-            pos_aligned = pos.reindex(pnl.index, method="ffill").fillna(0.0)
+            pos_aligned = pos.reindex(pnl.index).ffill().fillna(0.0)
 
             is_a = instr in a_codes
             bucket_prefix = "Long A" if is_a else "Long H"
