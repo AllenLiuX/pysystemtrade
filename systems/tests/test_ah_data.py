@@ -421,3 +421,21 @@ class TestAHPairNormalizedPosition:
 
         result = system.ah_data.get_ah_pair_normalized_position("000001.SZ")
         assert result.empty
+
+    def test_normalized_position_h_share_query_returns_h_leg(self):
+        """Querying H-share returns the H leg's normalized position directly."""
+        a_prices = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                    110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+                    120, 121, 122, 123, 124, 125]
+        h_prices = [100] * len(a_prices)
+
+        a_pos = [2.0] * len(a_prices)
+        h_pos = [-1.0] * len(a_prices)
+
+        system = self._make_mock_system_with_positions(a_prices, h_prices, a_pos, h_pos)
+
+        norm_h = system.ah_data.get_ah_pair_normalized_position("02318.HK")
+
+        # H-share should get -1.5 (negative of avg magnitude, since A is positive)
+        expected = pd.Series([-1.5] * len(a_prices), index=pd.bdate_range("2026-01-01", periods=len(a_prices)))
+        pd.testing.assert_series_equal(norm_h, expected)
