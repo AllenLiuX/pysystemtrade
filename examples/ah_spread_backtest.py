@@ -19,21 +19,24 @@
 #
 # ## Assumptions
 #
-# 1. **Instrument treatment:** A and H shares are treated as separate, independently tradable instruments.
-#    Both legs of each pair receive the same signal from the ah_spread rule (symmetric mean-reversion).
+# 1. **Instrument treatment:** A and H shares are paired instruments in a dollar-neutral pair trade.
+#    Each pair receives opposite-signed forecasts: when A gets a positive forecast, H gets negative.
 #
-# 2. **Signal symmetry:** The spread is computed as `cumsum(log_ret_A - log_ret_H)`. Both legs receive
-#    the same z-score signal. For the A-share leg, a positive z-score means A is expensive (sell signal).
-#    For the H-share leg, the same positive z-score means H is cheap relative to A (buy signal).
-#    The portfolio stage interprets the signal independently for each instrument.
+# 2. **Signal construction:** The spread is computed as `cumsum(log_ret_A - log_ret_H)`.
+#    A-shares receive the raw z-score; H-shares receive the negated z-score.
+#    After the `ah_spread` rule negates the signal, A and H have opposite-signed forecasts.
+#    When z-score is positive (A outperformed): A gets short signal, H gets long signal.
+#    When z-score is negative (A underperformed): A gets long signal, H gets short signal.
 #
-# 3. **Initial capital:** 10M CNY, split equally across all instruments via equal portfolio weighting.
+# 3. **Dollar-neutral positions:** Raw subsystem positions are normalized per pair so that
+#    `|position_A| == |position_H|` and `position_A = -position_H`. The magnitude is the
+#    average of the absolute raw positions. A-share's sign determines the pair direction.
 #
-# 4. **Forecast scaling:** Default pysystemtrade scaling — forecasts are scaled to a target magnitude of 10
-#    and capped at ±20. This means the maximum position size per instrument is 2x the base vol-targeted size.
+# 4. **Initial capital:** 10M CNY, split equally across all pairs (not instruments).
+#    Each pair receives equal notional allocation.
 #
-# 5. **Portfolio weighting:** Equal-weighted across all instruments. Each instrument receives the same
-#    notional allocation regardless of market cap, sector, or liquidity.
+# 5. **Forecast scaling:** Default pysystemtrade scaling — forecasts are scaled to a target
+#    magnitude of 10 and capped at ±20.
 #
 # 6. **Short selling:** No constraints. Both long and short positions are allowed on A and H shares.
 #    In practice, A-share short selling may be restricted (margin trading only, limited stock borrow).
@@ -42,32 +45,26 @@
 #    and commission for A-shares; HK brokerage fees for H-shares are not modeled separately).
 #
 # 8. **Data source:** Daily adjusted (forward-adjusted, qfq) prices from Supabase/parquet.
-#    H-share prices are NOT converted to CNY for the spread calculation — log returns are unitless,
-#    so the spread between A and H log returns does not require currency conversion.
+#    H-share prices are NOT converted to CNY for the spread calculation — log returns are unitless.
 #
 # 9. **Common trading days:** Spread is computed only on days when both A and H markets are open.
-#    Days where one market is closed are excluded from the spread calculation.
 #
 # 10. **Lookback:** 20-day rolling window for z-score calculation (configurable).
-#     This corresponds to approximately one calendar month of trading days.
 #
-# 11. **Liquidity proxy:** Top 20 selection is based on average daily trading volume (in shares)
-#     over the available data period. This is a crude proxy — actual liquidity depends on bid-ask
-#     spread, market impact, and borrow availability.
+# 11. **Liquidity proxy:** Top 20 selection is based on average daily trading volume (in shares).
 #
-# 12. **No regime filter:** The strategy runs continuously regardless of market regime (bull/bear).
-#     A regime filter could improve performance by disabling signals during trending markets.
+# 12. **No regime filter:** The strategy runs continuously regardless of market regime.
 #
 # 13. **Survivorship bias:** The A+H universe is based on currently dual-listed stocks.
-#     Delisted pairs are not included, which may overstate historical performance.
 #
 # 14. **FX risk:** H-share positions are denominated in HKD. Portfolio P&L is reported in CNY.
-#     FX fluctuations between HKD and CNY affect H-share P&L but are not hedged.
 
 # %%
 # Setup: Change to project root directory
 import os
+import sys
 from pathlib import Path
+
 
 project_root = Path(os.getcwd()).parent if "examples" in os.getcwd() else Path(os.getcwd())
 os.chdir(project_root)
@@ -262,6 +259,152 @@ def calc_performance_metrics(equity_curve, trading_days_per_year=252):
     }
 
 
+def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
+    """
+    Decompose portfolio P&L into 4 buckets:
+    - Long A-shares
+    - Short A-shares
+    - Long H-shares
+    - Short H-shares
+
+    Returns a dict with equity curves for each bucket and a summary DataFrame.
+    """
+    a_codes = {a for a, _ in pairs_list}
+
+    long_a_pnl = []
+    short_a_pnl = []
+    long_h_pnl = []
+    short_h_pnl = []
+
+    positions_dict = {}
+    pnl_dict = {}
+
+    for instr in instruments:
+        try:
+            pos = system.accounts.get_buffered_position(instr)
+            pnl = system.accounts.pandl_for_instrument(instr).curve()
+            if len(pos) > 0 and len(pnl) > 0:
+                positions_dict[instr] = pos
+                pnl_dict[instr] = pnl
+        except Exception:
+            pass
+
+    if not pnl_dict:
+        return None
+
+    common_index = pnl_dict[list(pnl_dict.keys())[0]].index
+    for instr in list(pnl_dict.keys())[1:]:
+        common_index = common_index.intersection(pnl_dict[instr].index)
+
+    if len(common_index) == 0:
+        return None
+
+    long_a_curve = pd.Series(0.0, index=common_index)
+    short_a_curve = pd.Series(0.0, index=common_index)
+    long_h_curve = pd.Series(0.0, index=common_index)
+    short_h_curve = pd.Series(0.0, index=common_index)
+
+    for instr in pnl_dict:
+        pnl = pnl_dict[instr].loc[common_index]
+        if instr in positions_dict:
+            pos = positions_dict[instr].reindex(common_index, method="ffill").fillna(0.0)
+        else:
+            pos = pd.Series(0.0, index=common_index)
+
+        is_a = instr in a_codes
+
+        long_mask = pos > 0
+        short_mask = pos < 0
+
+        if is_a:
+            long_a_curve += pnl.where(long_mask, 0.0)
+            short_a_curve += pnl.where(short_mask, 0.0)
+        else:
+            long_h_curve += pnl.where(long_mask, 0.0)
+            short_h_curve += pnl.where(short_mask, 0.0)
+
+    return {
+        "Long A": long_a_curve,
+        "Short A": short_a_curve,
+        "Long H": long_h_curve,
+        "Short H": short_h_curve,
+    }
+
+
+def calc_pair_normalized_pnl(system, pairs_list, data):
+    """
+    Compute pair-level P&L using dollar-normalized positions.
+
+    For each pair:
+    1. Get raw positions and P&L for both legs
+    2. Normalize positions: avg_abs = (|pos_A| + |pos_H|) / 2
+    3. Normalized P&L = norm_pos_A * return_A + norm_pos_H * return_H
+
+    Returns:
+        Dict with per-pair equity curves and aggregate pair P&L
+    """
+    pair_pnl_curves = {}
+    all_pair_pnl = pd.Series(0.0)
+
+    for a_code, h_code in pairs_list:
+        try:
+            # Get raw positions
+            pos_a = system.accounts.get_buffered_position(a_code)
+            pos_h = system.accounts.get_buffered_position(h_code)
+
+            if len(pos_a) == 0 or len(pos_h) == 0:
+                continue
+
+            # Normalize positions
+            common_dates = pos_a.index.intersection(pos_h.index)
+            if len(common_dates) < 2:
+                continue
+
+            pos_a_aligned = pos_a.reindex(common_dates, method="ffill").fillna(0.0)
+            pos_h_aligned = pos_h.reindex(common_dates, method="ffill").fillna(0.0)
+
+            avg_abs = (pos_a_aligned.abs() + pos_h_aligned.abs()) / 2.0
+            sign_a = pos_a_aligned.apply(lambda x: 1 if x >= 0 else -1)
+
+            norm_pos_a = avg_abs * sign_a
+            norm_pos_h = -norm_pos_a
+
+            # Get returns
+            prices_a = data.get_raw_price(a_code)
+            prices_h = data.get_raw_price(h_code)
+
+            if prices_a is None or prices_h is None:
+                continue
+
+            ret_a = prices_a.loc[common_dates].pct_change().dropna()
+            ret_h = prices_h.loc[common_dates].pct_change().dropna()
+
+            # Compute normalized P&L (proportional to position * return)
+            common_ret = ret_a.index.intersection(ret_h.index)
+            norm_pos_a_ret = norm_pos_a.reindex(common_ret, method="ffill").fillna(0.0)
+            norm_pos_h_ret = norm_pos_h.reindex(common_ret, method="ffill").fillna(0.0)
+
+            pair_daily_pnl = norm_pos_a_ret.loc[common_ret] * ret_a.loc[common_ret] + \
+                            norm_pos_h_ret.loc[common_ret] * ret_h.loc[common_ret]
+
+            # Scale to capital allocation per pair
+            capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
+            pair_cum_pnl = (1 + pair_daily_pnl).cumprod() * capital_per_pair
+
+            pair_pnl_curves[f"{a_code}/{h_code}"] = pair_cum_pnl
+
+            if all_pair_pnl.empty:
+                all_pair_pnl = pair_cum_pnl
+            else:
+                common = all_pair_pnl.index.intersection(pair_cum_pnl.index)
+                all_pair_pnl = all_pair_pnl.loc[common] + pair_cum_pnl.loc[common]
+
+        except Exception as e:
+            continue
+
+    return pair_pnl_curves, all_pair_pnl
+
+
 # %% [markdown]
 # ## Backtest: Top 20 Pairs by Liquidity
 
@@ -429,6 +572,20 @@ for a_code, h_code, name in CASE_STUDIES:
     print(f"Raw forecast range: [{raw_forecast.min():.2f}, {raw_forecast.max():.2f}]")
     print(f"Capped forecast range: [{capped_forecast.min():.2f}, {capped_forecast.max():.2f}]")
 
+    # Get normalized positions
+    try:
+        norm_pos_a = full_system.ah_data.get_ah_pair_normalized_position(a_code)
+        norm_pos_h = full_system.ah_data.get_ah_pair_normalized_position(h_code)
+
+        if not norm_pos_a.empty and not norm_pos_h.empty:
+            print(f"Normalized position A range: [{norm_pos_a.min():.4f}, {norm_pos_a.max():.4f}]")
+            print(f"Normalized position H range: [{norm_pos_h.min():.4f}, {norm_pos_h.max():.4f}]")
+            # Verify dollar-neutrality
+            diff = (norm_pos_a + norm_pos_h).abs().max()
+            print(f"Max |pos_A + pos_H| (should be ~0): {diff:.2e}")
+    except Exception as e:
+        print(f"Normalized positions: Error — {e}")
+
     # Plot case study
     fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
 
@@ -474,14 +631,248 @@ for a_code, h_code, name in CASE_STUDIES:
     plt.tight_layout()
     plt.show()
 
-    # Per-instrument P&L
+    # Per-instrument P&L with full performance metrics
+    print(f"\n{'─' * 50}")
+    print(f"Per-Instrument Performance:")
+    print(f"{'─' * 50}")
+
+    for instr_code, label in [(a_code, "A-share"), (h_code, "H-share")]:
+        try:
+            pnl_curve = full_system.accounts.pandl_for_instrument(instr_code).curve()
+            metrics = calc_performance_metrics(pnl_curve)
+            print(f"\n  {instr_code} ({label}):")
+            for k, v in metrics.items():
+                print(f"    {k}: {v}")
+        except Exception as e:
+            print(f"\n  {instr_code} ({label}): Error — {e}")
+
+    # Per-instrument P&L plot
     try:
         a_pnl = full_system.accounts.pandl_for_instrument(a_code).curve()
         h_pnl = full_system.accounts.pandl_for_instrument(h_code).curve()
-        print(f"\n  {a_code} P&L: {a_pnl.iloc[-1]:,.0f} CNY")
-        print(f"  {h_code} P&L: {h_pnl.iloc[-1]:,.0f} CNY")
+        pair_pnl = a_pnl + h_pnl
+
+        fig, ax = plt.subplots(figsize=(14, 5))
+        ax.plot(a_pnl.index, a_pnl.values, 'b-', linewidth=1.5, label=f'{a_code} (A)')
+        ax.plot(h_pnl.index, h_pnl.values, 'r-', linewidth=1.5, label=f'{h_code} (H)')
+        ax.plot(pair_pnl.index, pair_pnl.values, 'k-', linewidth=2, label='Pair Total')
+        ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_ylabel('Cumulative P&L (CNY)')
+        ax.set_title(f'{name} — Per-Instrument P&L')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
     except Exception as e:
-        print(f"\n  P&L calculation error: {e}")
+        print(f"  Could not plot P&L: {e}")
+
+# %% [markdown]
+# ## P&L Decomposition: Long A, Short A, Long H, Short H
+#
+# This section decomposes the total portfolio P&L into 4 buckets based on
+# instrument type (A-share vs H-share) and position direction (long vs short).
+#
+# This reveals whether the strategy profits more from:
+# - Going long on undervalued A-shares
+# - Shorting overvalued A-shares
+# - Going long on undervalued H-shares
+# - Shorting overvalued H-shares
+
+# %%
+print("=" * 60)
+print("P&L DECOMPOSITION ANALYSIS")
+print("=" * 60)
+
+# Decompose full universe
+decomp = calc_instrument_pnl_decomposition(full_system, full_instruments, pairs_with_data)
+
+if decomp is not None:
+    print(f"\nCumulative P&L by bucket:")
+    for bucket, curve in decomp.items():
+        final_pnl = curve.iloc[-1]
+        print(f"  {bucket:>10}: {final_pnl:>12,.0f} CNY")
+
+    total_decomp = sum(curve.iloc[-1] for curve in decomp.values())
+    print(f"  {'Total':>10}: {total_decomp:>12,.0f} CNY")
+
+    # Plot decomposition
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+
+    # Individual bucket equity curves
+    colors = {'Long A': '#2ecc71', 'Short A': '#e74c3c', 'Long H': '#3498db', 'Short H': '#f39c12'}
+    for bucket, curve in decomp.items():
+        axes[0].plot(curve.index, curve.values, color=colors.get(bucket, 'gray'),
+                     linewidth=1.5, label=bucket)
+    axes[0].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    axes[0].set_ylabel('Cumulative P&L (CNY)')
+    axes[0].set_title('P&L Decomposition by Position Type')
+    axes[0].legend(loc='upper left')
+    axes[0].grid(True, alpha=0.3)
+
+    # Stacked area chart
+    decomp_df = pd.DataFrame(decomp)
+    axes[1].stackplot(decomp_df.index,
+                      decomp_df['Long A'].values,
+                      decomp_df['Short A'].values,
+                      decomp_df['Long H'].values,
+                      decomp_df['Short H'].values,
+                      labels=['Long A', 'Short A', 'Long H', 'Short H'],
+                      colors=[colors[b] for b in ['Long A', 'Short A', 'Long H', 'Short H']],
+                      alpha=0.7)
+    axes[1].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    axes[1].set_ylabel('Cumulative P&L (CNY)')
+    axes[1].set_xlabel('Date')
+    axes[1].set_title('Stacked P&L Decomposition')
+    axes[1].legend(loc='upper left')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Rolling contribution (60-day window)
+    fig, ax = plt.subplots(figsize=(14, 5))
+    for bucket, curve in decomp.items():
+        rolling_contrib = curve.rolling(60).apply(lambda x: x.iloc[-1] - x.iloc[0] if len(x) > 1 else 0)
+        ax.plot(rolling_contrib.index, rolling_contrib.values, color=colors.get(bucket, 'gray'),
+                linewidth=1.5, label=bucket)
+    ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_ylabel('60-Day Rolling P&L (CNY)')
+    ax.set_xlabel('Date')
+    ax.set_title('60-Day Rolling P&L by Position Type')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # Summary table
+    print(f"\n{'=' * 70}")
+    print(f"{'Bucket':>12} {'Total P&L':>14} {'Ann Return':>12} {'Sharpe':>8} {'Max DD':>8} {'% of Total':>10}")
+    print(f"{'─' * 70}")
+
+    total_pnl = sum(curve.iloc[-1] for curve in decomp.values())
+    for bucket, curve in decomp.items():
+        metrics = calc_performance_metrics(curve + 1)  # Add 1 to avoid division issues
+        total_ret = curve.iloc[-1]
+        ann_ret = metrics.get("Annualized Return (%)", "N/A")
+        sharpe = metrics.get("Sharpe Ratio", "N/A")
+        max_dd = metrics.get("Max Drawdown (%)", "N/A")
+        pct = (total_ret / total_pnl * 100) if total_pnl != 0 else 0
+        print(f"{bucket:>12} {total_ret:>14,.0f} {ann_ret:>11}% {sharpe:>8} {max_dd:>7}% {pct:>9.1f}%")
+    print(f"{'─' * 70}")
+    print(f"{'Total':>12} {total_pnl:>14,.0f}")
+    print(f"{'=' * 70}")
+else:
+    print("Could not compute decomposition — insufficient position data")
+
+# %%
+# Decomposition for Top 20
+print("\n" + "=" * 60)
+print("P&L DECOMPOSITION: TOP 20 PAIRS")
+print("=" * 60)
+
+decomp_top20 = calc_instrument_pnl_decomposition(top_20_system, top_20_instruments, top_20_pairs_fixed)
+
+if decomp_top20 is not None:
+    print(f"\nCumulative P&L by bucket:")
+    for bucket, curve in decomp_top20.items():
+        final_pnl = curve.iloc[-1]
+        print(f"  {bucket:>10}: {final_pnl:>12,.0f} CNY")
+
+    total_decomp_t20 = sum(curve.iloc[-1] for curve in decomp_top20.values())
+    print(f"  {'Total':>10}: {total_decomp_t20:>12,.0f} CNY")
+
+    # Plot Top 20 decomposition
+    fig, ax = plt.subplots(figsize=(14, 5))
+    colors = {'Long A': '#2ecc71', 'Short A': '#e74c3c', 'Long H': '#3498db', 'Short H': '#f39c12'}
+    for bucket, curve in decomp_top20.items():
+        ax.plot(curve.index, curve.values, color=colors.get(bucket, 'gray'),
+                linewidth=1.5, label=bucket)
+    ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_ylabel('Cumulative P&L (CNY)')
+    ax.set_title('Top 20 Pairs — P&L Decomposition')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # Summary table
+    print(f"\n{'=' * 70}")
+    print(f"{'Bucket':>12} {'Total P&L':>14} {'Ann Return':>12} {'Sharpe':>8} {'Max DD':>8} {'% of Total':>10}")
+    print(f"{'─' * 70}")
+
+    total_pnl_t20 = sum(curve.iloc[-1] for curve in decomp_top20.values())
+    for bucket, curve in decomp_top20.items():
+        metrics = calc_performance_metrics(curve + 1)
+        total_ret = curve.iloc[-1]
+        ann_ret = metrics.get("Annualized Return (%)", "N/A")
+        sharpe = metrics.get("Sharpe Ratio", "N/A")
+        max_dd = metrics.get("Max Drawdown (%)", "N/A")
+        pct = (total_ret / total_pnl_t20 * 100) if total_pnl_t20 != 0 else 0
+        print(f"{bucket:>12} {total_ret:>14,.0f} {ann_ret:>11}% {sharpe:>8} {max_dd:>7}% {pct:>9.1f}%")
+    print(f"{'─' * 70}")
+    print(f"{'Total':>12} {total_pnl_t20:>14,.0f}")
+    print(f"{'=' * 70}")
+else:
+    print("Could not compute decomposition — insufficient position data")
+
+# %% [markdown]
+# ## Pair-Level P&L with Dollar-Normalized Positions
+#
+# This section recomputes P&L using dollar-neutral pair positions where
+# `|position_A| == |position_H|` and `position_A = -position_H`.
+
+# %%
+print("=" * 60)
+print("PAIR-LEVEL P&L (DOLLAR-NORMALIZED)")
+print("=" * 60)
+
+pair_curves, total_pair_pnl = calc_pair_normalized_pnl(full_system, pairs_with_data, data)
+
+if total_pair_pnl is not None and not total_pair_pnl.empty:
+    pair_metrics = calc_performance_metrics(total_pair_pnl)
+    print("\nNormalized Pair Performance Metrics:")
+    for k, v in pair_metrics.items():
+        print(f"  {k}: {v}")
+
+    # Plot normalized pair equity curve
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    axes[0].plot(total_pair_pnl.index, total_pair_pnl.values, 'purple', linewidth=1.5)
+    axes[0].set_ylabel('Portfolio Value (CNY)')
+    axes[0].set_title('Dollar-Normalized Pair P&L — Equity Curve')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].axhline(y=full_system.config.notional_trading_capital, color='gray', linestyle='--', alpha=0.5)
+
+    # Drawdown
+    pair_returns = total_pair_pnl.pct_change().dropna()
+    pair_cumulative = (1 + pair_returns).cumprod()
+    pair_running_max = pair_cumulative.cummax()
+    pair_drawdown = (pair_cumulative - pair_running_max) / pair_running_max * 100
+
+    axes[1].fill_between(pair_drawdown.index, pair_drawdown.values, 0, color='red', alpha=0.3)
+    axes[1].set_ylabel('Drawdown (%)')
+    axes[1].set_xlabel('Date')
+    axes[1].set_title('Drawdown')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Top and bottom pairs
+    if pair_curves:
+        final_pnls = {pair: curve.iloc[-1] for pair, curve in pair_curves.items()}
+        top_pairs = sorted(final_pnls.items(), key=lambda x: x[1], reverse=True)[:10]
+        bottom_pairs = sorted(final_pnls.items(), key=lambda x: x[1])[:10]
+
+        print(f"\nTop 10 Pairs by P&L:")
+        for pair, pnl in top_pairs:
+            print(f"  {pair}: {pnl:>12,.0f} CNY")
+
+        print(f"\nBottom 10 Pairs by P&L:")
+        for pair, pnl in bottom_pairs:
+            print(f"  {pair}: {pnl:>12,.0f} CNY")
+else:
+    print("Could not compute normalized pair P&L")
 
 # %% [markdown]
 # ## Forecast Analysis
@@ -692,7 +1083,15 @@ try:
     log_p = np.log(prices_a)
     fwd_1d = log_p.shift(-1) - log_p
 
-    rolling_ic = fc_a.rolling(60).corr(fwd_1d, method='spearman')
+    def rolling_spearman(x, window=60):
+        result = pd.Series(np.nan, index=x.index)
+        for i in range(window, len(x)):
+            valid = pd.DataFrame({'fc': x.iloc[i-window:i], 'fwd': fwd_1d.iloc[i-window:i]}).dropna()
+            if len(valid) > 10:
+                result.iloc[i] = valid['fc'].rank().corr(valid['fwd'].rank())
+        return result
+
+    rolling_ic = rolling_spearman(fc_a, window=60)
 
     fig, ax = plt.subplots(figsize=(14, 4))
     ax.plot(rolling_ic.index, rolling_ic.values, 'b-', linewidth=1)
@@ -750,3 +1149,5 @@ except Exception as e:
 #
 # 10. **No leverage constraints:** The forecast cap of ±20 implies maximum 2x vol-targeted
 #     position size. Real accounts may have margin limits that restrict leverage.
+
+# %%
