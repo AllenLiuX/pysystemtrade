@@ -266,63 +266,50 @@ def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
     - Long H-shares
     - Short H-shares
 
+    Each bucket accumulates daily P&L independently — no common-index intersection.
+
     Returns a dict with equity curves for each bucket and a summary DataFrame.
     """
     a_codes = {a for a, _ in pairs_list}
 
-    positions_dict = {}
-    pnl_dict = {}
+    # Collect daily P&L per bucket as lists of series
+    bucket_daily_pnl = {"Long A": [], "Short A": [], "Long H": [], "Short H": []}
 
     for instr in instruments:
         try:
             pos = system.accounts.get_buffered_position(instr)
             pnl = system.accounts.pandl_for_instrument(instr).curve()
-            if len(pos) > 0 and len(pnl) > 0:
-                positions_dict[instr] = pos
-                pnl_dict[instr] = pnl
+            if len(pos) == 0 or len(pnl) == 0:
+                continue
+
+            # Reindex position to match P&L dates
+            pos_aligned = pos.reindex(pnl.index, method="ffill").fillna(0.0)
+
+            is_a = instr in a_codes
+            bucket_prefix = "Long A" if is_a else "Long H"
+            short_prefix = "Short A" if is_a else "Short H"
+
+            # Compute daily P&L from cumulative P&L
+            daily_pnl = pnl.diff().fillna(pnl.iloc[0] if len(pnl) > 0 else 0.0)
+
+            long_mask = pos_aligned > 0
+            short_mask = pos_aligned < 0
+
+            bucket_daily_pnl[bucket_prefix].append(daily_pnl.where(long_mask, 0.0))
+            bucket_daily_pnl[short_prefix].append(daily_pnl.where(short_mask, 0.0))
         except Exception:
             pass
 
-    if not pnl_dict:
-        return None
-
-    common_index = pnl_dict[list(pnl_dict.keys())[0]].index
-    for instr in list(pnl_dict.keys())[1:]:
-        common_index = common_index.intersection(pnl_dict[instr].index)
-
-    if len(common_index) == 0:
-        return None
-
-    long_a_curve = pd.Series(0.0, index=common_index)
-    short_a_curve = pd.Series(0.0, index=common_index)
-    long_h_curve = pd.Series(0.0, index=common_index)
-    short_h_curve = pd.Series(0.0, index=common_index)
-
-    for instr in pnl_dict:
-        pnl = pnl_dict[instr].loc[common_index]
-        if instr in positions_dict:
-            pos = positions_dict[instr].reindex(common_index, method="ffill").fillna(0.0)
+    # Build cumulative curves per bucket
+    result = {}
+    for bucket, daily_list in bucket_daily_pnl.items():
+        if daily_list:
+            combined = pd.DataFrame(daily_list).sum()
+            result[bucket] = combined.cumsum()
         else:
-            pos = pd.Series(0.0, index=common_index)
+            result[bucket] = pd.Series(0.0)
 
-        is_a = instr in a_codes
-
-        long_mask = pos > 0
-        short_mask = pos < 0
-
-        if is_a:
-            long_a_curve += pnl.where(long_mask, 0.0)
-            short_a_curve += pnl.where(short_mask, 0.0)
-        else:
-            long_h_curve += pnl.where(long_mask, 0.0)
-            short_h_curve += pnl.where(short_mask, 0.0)
-
-    return {
-        "Long A": long_a_curve,
-        "Short A": short_a_curve,
-        "Long H": long_h_curve,
-        "Short H": short_h_curve,
-    }
+    return result
 
 
 def calc_pair_normalized_pnl(system, pairs_list, data):
@@ -330,15 +317,18 @@ def calc_pair_normalized_pnl(system, pairs_list, data):
     Compute pair-level P&L using dollar-normalized positions.
 
     For each pair:
-    1. Get raw positions and P&L for both legs
+    1. Get raw positions for both legs
     2. Normalize positions: avg_abs = (|pos_A| + |pos_H|) / 2
-    3. Normalized P&L = norm_pos_A * return_A + norm_pos_H * return_H
+    3. Dollar P&L = capital_per_pair * (norm_pos_A * ret_A + norm_pos_H * ret_H)
+    4. Cumulative P&L = cumsum of daily dollar P&L
 
     Returns:
         Dict with per-pair equity curves and aggregate pair P&L
     """
     if not pairs_list:
         return {}, pd.Series(dtype=float)
+
+    capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
 
     pair_pnl_curves = {}
     daily_pnl_series = []
@@ -376,30 +366,33 @@ def calc_pair_normalized_pnl(system, pairs_list, data):
             ret_a = prices_a.loc[common_dates].pct_change().dropna()
             ret_h = prices_h.loc[common_dates].pct_change().dropna()
 
-            # Compute normalized P&L (proportional to position * return)
+            # Compute normalized P&L
             common_ret = ret_a.index.intersection(ret_h.index)
+            if len(common_ret) == 0:
+                continue
+
             norm_pos_a_ret = norm_pos_a.reindex(common_ret, method="ffill").fillna(0.0)
             norm_pos_h_ret = norm_pos_h.reindex(common_ret, method="ffill").fillna(0.0)
 
-            pair_daily_pnl = norm_pos_a_ret.loc[common_ret] * ret_a.loc[common_ret] + \
-                            norm_pos_h_ret.loc[common_ret] * ret_h.loc[common_ret]
+            # Dollar P&L = capital * position * return
+            pair_daily_dollar_pnl = capital_per_pair * (
+                norm_pos_a_ret.loc[common_ret] * ret_a.loc[common_ret] +
+                norm_pos_h_ret.loc[common_ret] * ret_h.loc[common_ret]
+            )
 
-            daily_pnl_series.append(pair_daily_pnl)
+            daily_pnl_series.append(pair_daily_dollar_pnl)
 
-            # Scale to capital allocation per pair
-            capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
-            pair_cum_pnl = (1 + pair_daily_pnl).cumprod() * capital_per_pair
-
+            # Per-pair cumulative P&L as equity curve
+            pair_cum_pnl = pair_daily_dollar_pnl.cumsum() + capital_per_pair
             pair_pnl_curves[f"{a_code}/{h_code}"] = pair_cum_pnl
 
         except Exception as e:
             continue
 
-    # Aggregate all daily P&L series by summing (handles different date ranges gracefully)
+    # Aggregate all daily P&L series by summing
     if daily_pnl_series:
         combined_daily = pd.DataFrame(daily_pnl_series).sum()
-        capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
-        all_pair_pnl = (1 + combined_daily).cumprod() * capital_per_pair * len(pairs_list)
+        all_pair_pnl = combined_daily.cumsum() + system.config.notional_trading_capital
     else:
         all_pair_pnl = pd.Series(dtype=float)
 
@@ -747,18 +740,14 @@ if decomp is not None:
 
     # Summary table
     print(f"\n{'=' * 70}")
-    print(f"{'Bucket':>12} {'Total P&L':>14} {'Ann Return':>12} {'Sharpe':>8} {'Max DD':>8} {'% of Total':>10}")
+    print(f"{'Bucket':>12} {'Total P&L':>14} {'% of Total':>10}")
     print(f"{'─' * 70}")
 
     total_pnl = sum(curve.iloc[-1] for curve in decomp.values())
     for bucket, curve in decomp.items():
-        metrics = calc_performance_metrics(curve + 1)  # Add 1 to avoid division issues
         total_ret = curve.iloc[-1]
-        ann_ret = metrics.get("Annualized Return (%)", "N/A")
-        sharpe = metrics.get("Sharpe Ratio", "N/A")
-        max_dd = metrics.get("Max Drawdown (%)", "N/A")
         pct = (total_ret / total_pnl * 100) if total_pnl != 0 else 0
-        print(f"{bucket:>12} {total_ret:>14,.0f} {ann_ret:>11}% {sharpe:>8} {max_dd:>7}% {pct:>9.1f}%")
+        print(f"{bucket:>12} {total_ret:>14,.0f} {pct:>9.1f}%")
     print(f"{'─' * 70}")
     print(f"{'Total':>12} {total_pnl:>14,.0f}")
     print(f"{'=' * 70}")
@@ -798,18 +787,14 @@ if decomp_top20 is not None:
 
     # Summary table
     print(f"\n{'=' * 70}")
-    print(f"{'Bucket':>12} {'Total P&L':>14} {'Ann Return':>12} {'Sharpe':>8} {'Max DD':>8} {'% of Total':>10}")
+    print(f"{'Bucket':>12} {'Total P&L':>14} {'% of Total':>10}")
     print(f"{'─' * 70}")
 
     total_pnl_t20 = sum(curve.iloc[-1] for curve in decomp_top20.values())
     for bucket, curve in decomp_top20.items():
-        metrics = calc_performance_metrics(curve + 1)
         total_ret = curve.iloc[-1]
-        ann_ret = metrics.get("Annualized Return (%)", "N/A")
-        sharpe = metrics.get("Sharpe Ratio", "N/A")
-        max_dd = metrics.get("Max Drawdown (%)", "N/A")
         pct = (total_ret / total_pnl_t20 * 100) if total_pnl_t20 != 0 else 0
-        print(f"{bucket:>12} {total_ret:>14,.0f} {ann_ret:>11}% {sharpe:>8} {max_dd:>7}% {pct:>9.1f}%")
+        print(f"{bucket:>12} {total_ret:>14,.0f} {pct:>9.1f}%")
     print(f"{'─' * 70}")
     print(f"{'Total':>12} {total_pnl_t20:>14,.0f}")
     print(f"{'=' * 70}")
