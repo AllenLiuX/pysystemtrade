@@ -36,7 +36,7 @@ class pandlCalculation(object):
         return calculations_and_diagnostic_df
 
     def calculations_df(self) -> pd.Series:
-        raise NotImplemented("Not implemented")
+        raise NotImplementedError("Not implemented")
 
     def weight(self, weight: pd.Series):
         weighted_capital = apply_weighting(weight, self.capital)
@@ -56,6 +56,9 @@ class pandlCalculation(object):
         self, frequency: Frequency = DAILY_PRICE_FREQ
     ) -> pd.Series:
         capital = self.capital
+        if isinstance(capital, pd.Series) and not isinstance(capital.index, pd.DatetimeIndex):
+            capital = capital.copy()
+            capital.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(capital))
         resample_freq = from_config_frequency_pandas_resample(frequency)
         capital_at_frequency = capital.resample(resample_freq).ffill()
 
@@ -67,7 +70,8 @@ class pandlCalculation(object):
         as_pd_series = self.as_pd_series(**kwargs)
 
         ## FIXME: Ugly to get pandas 2.x working
-        as_pd_series.index = pd.to_datetime(as_pd_series.index)
+        if not isinstance(as_pd_series.index, pd.DatetimeIndex):
+            as_pd_series.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(as_pd_series))
 
         resample_freq = from_config_frequency_pandas_resample(frequency)
         pd_series_at_frequency = as_pd_series.resample(resample_freq).sum()
@@ -131,7 +135,11 @@ class pandlCalculation(object):
 
     @property
     def length_in_months(self) -> int:
-        positions_monthly = self.positions.resample("1M").last()
+        positions = self.positions
+        if isinstance(positions, pd.Series) and not isinstance(positions.index, pd.DatetimeIndex):
+            positions = positions.copy()
+            positions.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(positions))
+        positions_monthly = positions.resample("ME").last()
         positions_ffill = positions_monthly.ffill()
         positions_no_nans = positions_ffill.dropna()
 

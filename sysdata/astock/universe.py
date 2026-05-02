@@ -260,7 +260,31 @@ class AStockUniverse:
         existing.update(new_symbols)
         cls.save_valid_symbols(sorted(existing))
 
-    # ── 统一入口 ────────────────────────────────────────────────
+    # ── A+H 双市股票池 ─────────────────────────────────────────
+
+    @classmethod
+    def get_ah_a_codes(cls) -> List[str]:
+        """获取A+H双市公司的A股代码列表"""
+        from sysdata.astock.akshare_client import AkshareClient
+        mapping = AkshareClient.load_ah_mapping()
+        if mapping.empty:
+            return []
+        return sorted(mapping["a_code"].tolist())
+
+    @classmethod
+    def get_ah_h_codes(cls) -> List[str]:
+        """获取A+H双市公司的H股代码列表 (格式: 02318.HK)"""
+        from sysdata.astock.akshare_client import AkshareClient
+        mapping = AkshareClient.load_ah_mapping()
+        if mapping.empty:
+            return []
+        return [f"{h}.HK" for h in sorted(mapping["h_code"].tolist())]
+
+    @classmethod
+    def get_ah_pairs(cls) -> List[tuple]:
+        """获取A+H配对列表 [(a_code, h_code), ...]"""
+        from sysdata.astock.akshare_client import AkshareClient
+        return AkshareClient.get_ah_pairs()
 
     @classmethod
     def get(cls, name: str) -> List[str]:
@@ -269,7 +293,7 @@ class AStockUniverse:
 
         Args:
             name: 池名称
-                - sse50, hs300, zz500, popular, etf
+                - sse50, hs300, zz500, popular, etf, ah
                 - all       — 预定义池去重合集
                 - full      — 全市场代码范围（~10000+，含空号）
                 - valid     — 已发现的有效品种
@@ -284,6 +308,7 @@ class AStockUniverse:
             'zz500':   cls.ZZ500_CORE,
             'popular': cls.POPULAR,
             'etf':     cls.ETF,
+            'ah':      cls.get_ah_a_codes(),
             'all':     sorted(set(
                 cls.SSE50 + cls.HS300_CORE + cls.ZZ500_CORE +
                 cls.POPULAR + cls.ETF
@@ -315,7 +340,7 @@ class AStockUniverse:
     @classmethod
     def available_pools(cls) -> List[str]:
         """列出可用股票池"""
-        return ['sse50', 'hs300', 'zz500', 'popular', 'etf', 'all', 'full', 'valid', 'test']
+        return ['sse50', 'hs300', 'zz500', 'popular', 'etf', 'ah', 'all', 'full', 'valid', 'test']
 
     @classmethod
     def pool_sizes(cls) -> Dict[str, int]:

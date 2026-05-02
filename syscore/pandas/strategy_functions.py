@@ -18,6 +18,10 @@ def turnover(
 
     """
 
+    if not isinstance(x.index, pd.DatetimeIndex):
+        x = x.copy()
+        x.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(x))
+
     daily_x = x.resample("1B").last()
     if isinstance(y, float) or isinstance(y, int):
         daily_y = pd.Series(np.full(daily_x.shape[0], float(y)), daily_x.index)

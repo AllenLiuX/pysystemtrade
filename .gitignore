@@ -9,6 +9,7 @@ dist
 build
 private
 restats
+uv.lock
 
 # Coverage reports
 .coverage
@@ -36,5 +37,9 @@ venv/
 data/astock/daily_prices_parquet/*.parquet
 data/astock/minutes_prices_parquet/
 
+dashboard/cache/
+
+# Superpowers design docs and plans
+docs/superpowers/
 # pm2 logs
 logs/

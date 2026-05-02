@@ -102,4 +102,11 @@ def sum_list_of_pandl_curves(list_of_pandl_curves: list):
     df_of_pandl_curves = pd.concat(list_of_pandl_curves, axis=1, sort=True)
     summed_pandl_curve = df_of_pandl_curves.sum(axis=1)
 
+    # Ensure DatetimeIndex for pandas 2.x compatibility
+    if isinstance(summed_pandl_curve.index, pd.RangeIndex):
+        summed_pandl_curve = summed_pandl_curve.copy()
+        summed_pandl_curve.index = pd.bdate_range(
+            end=pd.Timestamp.today(), periods=len(summed_pandl_curve)
+        )
+
     return summed_pandl_curve

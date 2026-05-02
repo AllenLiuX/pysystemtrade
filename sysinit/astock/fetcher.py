@@ -46,6 +46,8 @@ from typing import List, Dict, Optional
 import pandas as pd
 
 from sysdata.astock.xiximiao_client import XiximiaoClient
+from sysdata.astock.astock_prices import AStockDailyPricesData, AStockMinutesPricesData
+from sysdata.astock.astock_instruments import AStockInstrumentData
 from sysdata.astock.db_config import (
     get_daily_prices_store, get_minutes_prices_store,
     get_instrument_data_store, get_spread_cost_store,
@@ -288,12 +290,14 @@ class AStockFetcher:
         symbols: List[str],
         freqs: List[str] = None,
         client: XiximiaoClient = None,
+        instrument_data: AStockInstrumentData = None,
         auto_sync_config: bool = True,
         initial_years: float = 5.0,
     ):
         self.symbols = symbols
         self.freqs = freqs or ["daily"]
         self.client = client or XiximiaoClient()
+        self.instrument_data = instrument_data or AStockInstrumentData()
         self.auto_sync_config = auto_sync_config
         self.calendar = ChinaMarketCalendar
 
@@ -333,7 +337,12 @@ class AStockFetcher:
         else:
             start = now - timedelta(days=self.DEFAULT_LOOKBACK["daily"])
 
-        raw = self.client.fetch_daily_range(ts_code, start, now)
+        asset_class = self.instrument_data.get_asset_class(ts_code)
+        if asset_class == "ETF":
+            raw = self.client.fetch_fund_daily_range(ts_code, start, now)
+        else:
+            raw = self.client.fetch_daily_range(ts_code, start, now)
+
         if raw.empty:
             return 0
 

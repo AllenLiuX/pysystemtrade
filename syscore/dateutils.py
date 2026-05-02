@@ -407,15 +407,19 @@ def from_config_frequency_to_frequency(freq_as_str: str) -> Frequency:
     <Frequency.BDay: 5>
     """
     LOOKUP_TABLE = {
+        "A": Frequency.Year,
         "Y": Frequency.Year,
+        "M": Frequency.Month,
         "m": Frequency.Month,
         "W": Frequency.Week,
         "B": Frequency.BDay,
         "D": Frequency.Day,
         "H": Frequency.Hour,
+        "15T": Frequency.Minutes_15,
         "15M": Frequency.Minutes_15,
+        "5T": Frequency.Minutes_5,
         "5M": Frequency.Minutes_5,
-        "M": Frequency.Minute,
+        "T": Frequency.Minute,
         "10S": Frequency.Seconds_10,
         "S": Frequency.Second,
     }
