@@ -5,8 +5,10 @@ A-Stock 数据后端配置 — PG / Parquet 开关
     - "parquet"  (默认) — 使用本地 Parquet 文件
     - "pg" / "postgresql" — 使用 PostgreSQL
 
-PG 连接通过 ASTOCK_PG_URL 环境变量配置:
-    postgresql://user:password@host:port/dbname
+PG 连接通过以下独立环境变量构建 (推荐):
+    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+
+ASTOCK_PG_URL 仍支持但已弃用 (向后兼容)。
 
 用法:
     from sysdata.astock.db_config import get_backend, get_engine, BackendType
@@ -21,6 +23,7 @@ import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,6 @@ class BackendType(Enum):
 
 # ── 全局配置 ────────────────────────────────────────────────────
 
-DEFAULT_PG_URL = "postgresql://wenxuanliu@localhost:5432/astock"
 
 def get_backend() -> BackendType:
     """获取当前后端类型"""
@@ -51,9 +53,40 @@ def get_backend() -> BackendType:
     return BackendType.PARQUET
 
 
+def _build_pg_url() -> str:
+    """
+    从独立环境变量构建 PostgreSQL 连接 URL。
+
+    优先级:
+    1. ASTOCK_PG_URL (已弃用，向后兼容)
+    2. POSTGRES_* 独立变量
+    3. 默认 localhost
+    """
+    legacy_url = os.environ.get("ASTOCK_PG_URL")
+    if legacy_url:
+        logger.warning(
+            "ASTOCK_PG_URL is deprecated. Use POSTGRES_HOST, POSTGRES_USER, "
+            "POSTGRES_PASSWORD, POSTGRES_PORT, POSTGRES_DB instead."
+        )
+        return legacy_url
+
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    user = os.environ.get("POSTGRES_USER", "postgres")
+    password = os.environ.get("POSTGRES_PASSWORD", "")
+    dbname = os.environ.get("POSTGRES_DB", "postgres")
+
+    encoded_password = quote_plus(password)
+    return (
+        f"postgresql://{user}:{encoded_password}"
+        f"@{host}:{port}/{dbname}"
+        f"?sslmode=require&channel_binding=disable"
+    )
+
+
 def get_pg_url() -> str:
     """获取 PostgreSQL 连接 URL"""
-    return os.environ.get("ASTOCK_PG_URL", DEFAULT_PG_URL)
+    return _build_pg_url()
 
 
 def is_pg_enabled() -> bool:

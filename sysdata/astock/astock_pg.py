@@ -16,7 +16,7 @@ Tables:
 
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import pandas as pd
 from sqlalchemy import (
@@ -94,6 +94,25 @@ t_valid_symbols = Table(
     Column("discovered_at", DateTime, default=datetime.now),
 )
 
+t_hk_daily_prices = Table(
+    "astock_hk_daily_prices", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("ts_code", String(20), nullable=False),
+    Column("dt", DateTime, nullable=False),
+    Column("open", Float),
+    Column("high", Float),
+    Column("low", Float),
+    Column("close", Float),
+    Column("volume", Float),
+    Column("amount", Float),
+    Column("pct_chg", Float),
+    Column("price", Float),
+    UniqueConstraint("ts_code", "dt", name="uq_hk_daily_code_dt"),
+)
+
+Index("ix_hk_daily_code_dt", t_hk_daily_prices.c.ts_code, t_hk_daily_prices.c.dt)
+Index("ix_hk_daily_dt", t_hk_daily_prices.c.dt)
+
 
 def create_all_tables(engine):
     """创建所有表 (如果不存在)"""
@@ -144,6 +163,47 @@ class PGDailyPricesData:
         return s
 
     get_adjusted_prices = property(lambda self: self.get_prices)
+
+    def get_prices_for_list(self, ts_codes: List[str]) -> Dict[str, pd.Series]:
+        """
+        Fetch prices for multiple instruments in a single SQL query.
+
+        :param ts_codes: List of instrument codes
+        :returns: Dict mapping ts_code -> pd.Series (price series)
+        """
+        if not ts_codes:
+            return {}
+
+        # Split into chunks to avoid SQL parameter limits (PostgreSQL supports ~65k params)
+        CHUNK_SIZE = 500
+        results = {}
+
+        for i in range(0, len(ts_codes), CHUNK_SIZE):
+            chunk = ts_codes[i:i + CHUNK_SIZE]
+            placeholders = ", ".join([f":code_{j}" for j in range(len(chunk))])
+            params = {f"code_{j}": code for j, code in enumerate(chunk)}
+
+            sql = text(
+                f"SELECT ts_code, dt, price FROM astock_daily_prices "
+                f"WHERE ts_code IN ({placeholders}) ORDER BY ts_code, dt"
+            )
+            with self._engine.connect() as conn:
+                df = pd.read_sql(sql, conn, params=params, parse_dates=["dt"])
+
+            if df.empty:
+                continue
+
+            for code in chunk:
+                code_df = df[df["ts_code"] == code]
+                if code_df.empty:
+                    results[code] = pd.Series(dtype=float)
+                else:
+                    s = code_df.set_index("dt")["price"]
+                    s.index.name = "DATETIME"
+                    s.name = "price"
+                    results[code] = s
+
+        return results
 
     def get_prices_dataframe(self, ts_code: str) -> pd.DataFrame:
         """返回完整 OHLCV DataFrame"""
@@ -543,7 +603,7 @@ class PGSpreadCostData:
     # ── write ──────────────────────────────────────────────────
 
     def upsert_spread_cost(self, instrument_code: str, cost: float):
-        record = {"instrument": instrument_code, "spread_cost": cost}
+        record = {"instrument": instrument_code, "spread_cost": float(cost)}
         stmt = pg_insert(t_spread_costs).values([record])
         stmt = stmt.on_conflict_do_update(
             index_elements=["instrument"],
@@ -557,7 +617,7 @@ class PGSpreadCostData:
         """批量插入 {instrument: spread_cost}"""
         if not spread_dict:
             return
-        records = [{"instrument": k, "spread_cost": v} for k, v in spread_dict.items()]
+        records = [{"instrument": k, "spread_cost": float(v)} for k, v in spread_dict.items()]
         stmt = pg_insert(t_spread_costs).values(records)
         stmt = stmt.on_conflict_do_update(
             index_elements=["instrument"],
@@ -601,3 +661,180 @@ class PGValidSymbols:
         existing = set(self.load_valid_symbols())
         existing.update(new_symbols)
         self.save_valid_symbols(sorted(existing))
+
+
+# ── H-Share Daily Prices ────────────────────────────────────────
+
+class PGHKDailyPricesData:
+    """
+    PostgreSQL H-share daily price storage
+
+    Interface mirrors HKStockDailyPricesData.
+    """
+
+    def __init__(self, engine=None):
+        if engine is None:
+            from sysdata.astock.db_config import get_engine
+            engine = get_engine()
+        self._engine = engine
+        create_all_tables(engine)
+
+    def __repr__(self):
+        return f"PGHKDailyPricesData @ {self._engine.url}"
+
+    # ── read ───────────────────────────────────────────────────
+
+    def get_list_of_instruments(self) -> List[str]:
+        sql = text("SELECT DISTINCT ts_code FROM astock_hk_daily_prices ORDER BY ts_code")
+        with self._engine.connect() as conn:
+            result = conn.execute(sql)
+            return [row[0] for row in result]
+
+    def get_prices(self, ts_code: str) -> pd.Series:
+        """Returns pd.Series, index=DatetimeIndex, values=close price"""
+        sql = text(
+            "SELECT dt, price FROM astock_hk_daily_prices "
+            "WHERE ts_code = :code ORDER BY dt"
+        )
+        with self._engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"code": ts_code}, parse_dates=["dt"])
+        if df.empty:
+            return pd.Series(dtype=float)
+        s = df.set_index("dt")["price"]
+        s.index.name = "DATETIME"
+        s.name = "price"
+        return s
+
+    get_adjusted_prices = get_prices
+
+    def get_prices_for_list(self, ts_codes: List[str]) -> Dict[str, pd.Series]:
+        """
+        Fetch prices for multiple instruments in a single SQL query.
+
+        :param ts_codes: List of instrument codes
+        :returns: Dict mapping ts_code -> pd.Series (price series)
+        """
+        if not ts_codes:
+            return {}
+
+        CHUNK_SIZE = 500
+        results = {}
+
+        for i in range(0, len(ts_codes), CHUNK_SIZE):
+            chunk = ts_codes[i:i + CHUNK_SIZE]
+            placeholders = ", ".join([f":code_{j}" for j in range(len(chunk))])
+            params = {f"code_{j}": code for j, code in enumerate(chunk)}
+
+            sql = text(
+                f"SELECT ts_code, dt, price FROM astock_hk_daily_prices "
+                f"WHERE ts_code IN ({placeholders}) ORDER BY ts_code, dt"
+            )
+            with self._engine.connect() as conn:
+                df = pd.read_sql(sql, conn, params=params, parse_dates=["dt"])
+
+            if df.empty:
+                continue
+
+            for code in chunk:
+                code_df = df[df["ts_code"] == code]
+                if code_df.empty:
+                    results[code] = pd.Series(dtype=float)
+                else:
+                    s = code_df.set_index("dt")["price"]
+                    s.index.name = "DATETIME"
+                    s.name = "price"
+                    results[code] = s
+
+        return results
+
+    def get_prices_dataframe(self, ts_code: str) -> pd.DataFrame:
+        """Returns full OHLCV DataFrame"""
+        sql = text(
+            "SELECT dt, open, high, low, close, volume, amount, pct_chg, price "
+            "FROM astock_hk_daily_prices WHERE ts_code = :code ORDER BY dt"
+        )
+        with self._engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"code": ts_code}, parse_dates=["dt"])
+        if df.empty:
+            return pd.DataFrame()
+        df = df.set_index("dt")
+        df.index.name = "DATETIME"
+        return df
+
+    # ── write ──────────────────────────────────────────────────
+
+    def write_prices(self, ts_code: str, df: pd.DataFrame):
+        """Overwrite full price data"""
+        if df.empty:
+            return
+        df = df.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df["ts_code"] = ts_code
+        df["dt"] = df.index
+        cols = ["ts_code", "dt", "open", "high", "low", "close",
+                "volume", "amount", "pct_chg", "price"]
+        cols = [c for c in cols if c in df.columns]
+        self._upsert_hk_daily(df[cols])
+
+    def append_prices(self, ts_code: str, new_df: pd.DataFrame) -> int:
+        """Incremental append. Returns new row count."""
+        if new_df.empty:
+            return 0
+
+        latest = self.get_latest_date(ts_code)
+        if latest is not None:
+            mask = new_df.index > latest
+            new_rows = new_df[mask]
+        else:
+            new_rows = new_df
+
+        if new_rows.empty:
+            return 0
+
+        df = new_rows.copy()
+        if "price" not in df.columns and "close" in df.columns:
+            df["price"] = df["close"]
+        df["ts_code"] = ts_code
+        df["dt"] = df.index
+
+        cols = ["ts_code", "dt", "open", "high", "low", "close",
+                "volume", "amount", "pct_chg", "price"]
+        cols = [c for c in cols if c in df.columns]
+        self._upsert_hk_daily(df[cols])
+        logger.info("Appended %d rows for %s (HK PG)", len(new_rows), ts_code)
+        return len(new_rows)
+
+    def get_latest_date(self, ts_code: str) -> Optional[pd.Timestamp]:
+        sql = text(
+            "SELECT MAX(dt) FROM astock_hk_daily_prices WHERE ts_code = :code"
+        )
+        with self._engine.connect() as conn:
+            result = conn.execute(sql, {"code": ts_code}).scalar()
+        if result is None:
+            return None
+        return pd.Timestamp(result)
+
+    def delete_prices(self, ts_code: str):
+        """Delete all prices for an instrument"""
+        sql = text("DELETE FROM astock_hk_daily_prices WHERE ts_code = :code")
+        with self._engine.begin() as conn:
+            conn.execute(sql, {"code": ts_code})
+        logger.info("Deleted prices for %s (HK PG)", ts_code)
+
+    # ── internal ───────────────────────────────────────────────
+
+    def _upsert_hk_daily(self, df: pd.DataFrame):
+        """UPSERT for H-share daily prices"""
+        if df.empty:
+            return
+        records = df.to_dict("records")
+        stmt = pg_insert(t_hk_daily_prices).values(records)
+        update_cols = {c.name: c for c in stmt.excluded if c.name not in ("id", "ts_code", "dt")}
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_hk_daily_code_dt",
+            set_=update_cols,
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)

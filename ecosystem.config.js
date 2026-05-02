@@ -13,9 +13,11 @@ module.exports = {
       error_file: "/Users/wenxuanliu/TradeAll/pysystemtrade/logs/astock-fetcher-daily-error.log",
       out_file: "/Users/wenxuanliu/TradeAll/pysystemtrade/logs/astock-fetcher-daily-out.log",
       merge_logs: true,
+      env_file: "/Users/wenxuanliu/TradeAll/pysystemtrade/.env",
       env: {
         PYTHONPATH: "/Users/wenxuanliu/TradeAll/pysystemtrade",
         PYTHONUNBUFFERED: "1",
+        ASTOCK_BACKEND: "pg",
       },
     },
   ],

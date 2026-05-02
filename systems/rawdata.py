@@ -53,7 +53,7 @@ class RawData(SystemStage):
             instrument_code=instrument_code, base_currency=base_currency
         )
 
-    @input
+    @diagnostic()
     def get_daily_prices(self, instrument_code) -> pd.Series:
         """
         Gets daily prices
@@ -444,7 +444,7 @@ class RawData(SystemStage):
         ## an input but we cache to avoid spamming with errors
         try:
             rolls_per_year = self.data_stage.get_rolls_per_year(instrument_code)
-        except:
+        except Exception:
             self.log.warning(
                 "No roll data for %s, this is fine for spot instruments but not for futures"
                 % instrument_code

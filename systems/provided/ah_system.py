@@ -15,9 +15,9 @@ from systems.ah_data import AHData
 from systems.forecasting import Rules
 from systems.forecast_scale_cap import ForecastScaleCap
 from systems.forecast_combine import ForecastCombine
-from systems.portfolios import Portfolios
-from systems.position_sizing import PositionSizing
-from systems.account import Account
+from systems.portfolio import Portfolios
+from systems.positionsizing import PositionSizing
+from systems.accounts.accounts_stage import Account
 from sysdata.sim.futures_sim_data import futuresSimData
 from sysdata.config.configdata import Config
 
@@ -26,7 +26,8 @@ DEFAULT_AH_RULES = {
     "ah_spread": {
         "function": "systems.provided.rules.ah_spread.ah_spread",
         "data": ["ah_data.get_ah_spread_zscore"],
-        "other_args": {"lookback": 20},
+        "other_args": {"_lookback": 20},
+        "forecast_scalar": 10.0,
     },
 }
 

@@ -67,6 +67,14 @@ class AStockSimData(simData):
         else:
             self._daily_store = get_daily_prices_store()
 
+        # H-share store (PG only, for A+H spread trading)
+        if is_pg_enabled():
+            from sysdata.astock.astock_pg import PGHKDailyPricesData
+            from sysdata.astock.db_config import get_engine
+            self._hk_daily_store = PGHKDailyPricesData(engine=get_engine())
+        else:
+            self._hk_daily_store = None
+
         if minutes_prices_path:
             self._minutes_store = AStockMinutesPricesData(datapath=minutes_prices_path)
         else:
@@ -79,6 +87,39 @@ class AStockSimData(simData):
             self._instrument_data = get_instrument_data_store()
             self._spread_cost_data = get_spread_cost_store()
 
+        # Price cache: instrument_code -> pd.Series (full price history)
+        self._price_cache = {}
+        self._prices_preloaded = False
+
+    def preload_prices(self, instrument_list: list) -> int:
+        """
+        Bulk-fetch prices for all instruments in a single SQL query per store.
+
+        Populates _price_cache so subsequent get_raw_price_from_start_date calls
+        hit the cache without any DB queries.
+
+        :param instrument_list: List of instrument codes to preload
+        :returns: Number of instruments successfully preloaded
+        """
+        if self._prices_preloaded:
+            return len(self._price_cache)
+
+        a_codes = [c for c in instrument_list if not c.endswith(".HK")]
+        h_codes = [c for c in instrument_list if c.endswith(".HK")]
+
+        # Bulk fetch A-share prices
+        if a_codes and hasattr(self._daily_store, "get_prices_for_list"):
+            a_prices = self._daily_store.get_prices_for_list(a_codes)
+            self._price_cache.update(a_prices)
+
+        # Bulk fetch H-share prices
+        if h_codes and self._hk_daily_store is not None and hasattr(self._hk_daily_store, "get_prices_for_list"):
+            h_prices = self._hk_daily_store.get_prices_for_list(h_codes)
+            self._price_cache.update(h_prices)
+
+        self._prices_preloaded = True
+        return len(self._price_cache)
+
     def __repr__(self):
         n = len(self.get_instrument_list())
         return f"AStockSimData with {n} instruments"
@@ -86,8 +127,12 @@ class AStockSimData(simData):
     # ── simData required interface ─────────────────────────────
 
     def get_instrument_list(self) -> list:
-        """List of A-stock instruments available in daily price store."""
-        return self._daily_store.get_list_of_instruments()
+        """List of A-stock and H-share instruments available in daily price stores."""
+        a_instruments = self._daily_store.get_list_of_instruments()
+        if self._hk_daily_store is not None:
+            h_instruments = self._hk_daily_store.get_list_of_instruments()
+            return sorted(set(a_instruments) | set(h_instruments))
+        return a_instruments
 
     def get_raw_price_from_start_date(
         self, instrument_code: str, start_date: datetime.datetime
@@ -95,10 +140,16 @@ class AStockSimData(simData):
         """
         Returns close price series from start_date onwards.
 
-        This is the core method that simData.get_raw_price() calls,
-        and that daily_prices() resamples to business-day index.
+        Uses internal price cache to avoid redundant DB queries.
+        Each instrument's full price history is fetched only once.
         """
-        prices = self._daily_store.get_prices(instrument_code)
+        if instrument_code not in self._price_cache:
+            if instrument_code.endswith(".HK") and self._hk_daily_store is not None:
+                self._price_cache[instrument_code] = self._hk_daily_store.get_prices(instrument_code)
+            else:
+                self._price_cache[instrument_code] = self._daily_store.get_prices(instrument_code)
+
+        prices = self._price_cache[instrument_code]
         if prices.empty:
             return prices
         return prices[start_date:]
@@ -174,6 +225,8 @@ class AStockSimData(simData):
 
     def get_ohlcv(self, instrument_code: str) -> pd.DataFrame:
         """Get full OHLCV daily data (if stored)."""
+        if instrument_code.endswith(".HK") and self._hk_daily_store is not None:
+            return self._hk_daily_store.get_prices_dataframe(instrument_code)
         return self._daily_store.get_prices_dataframe(instrument_code)
 
     def get_minutes_prices(
@@ -198,17 +251,33 @@ class AStockSimData(simData):
         return self._daily_store
 
     @property
+    def hk_daily_store(self):
+        """H-share daily price store (PG only, None if unavailable)."""
+        return self._hk_daily_store
+
+    @property
     def minutes_store(self) -> AStockMinutesPricesData:
         return self._minutes_store
+
+
+_fx_cache = {}
 
 
 def _constant_fx_series(
     start_date: datetime.datetime,
     end_date: datetime.datetime = None,
 ) -> fxPrices:
-    """Return a constant 1.0 FX series from start to ~today."""
+    """Return a constant 1.0 FX series from start to ~today. Cached to avoid regenerating."""
     if end_date is None:
         end_date = datetime.datetime.now()
+
+    # Cache key: start date rounded to day, end date rounded to day
+    cache_key = (start_date.date(), end_date.date())
+    if cache_key in _fx_cache:
+        return _fx_cache[cache_key]
+
     dates = pd.bdate_range(start=start_date, end=end_date)
     series = pd.Series(1.0, index=dates)
-    return fxPrices(series)
+    result = fxPrices(series)
+    _fx_cache[cache_key] = result
+    return result

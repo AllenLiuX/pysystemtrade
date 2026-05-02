@@ -24,18 +24,27 @@ class CnFuturesDailyPricesData:
         path = self.data_dir / f"{symbol}.parquet"
         if not path.exists():
             return None
-        df = pd.read_parquet(path)
-        if df.empty:
+        import pyarrow.parquet as pq
+        pf = pq.ParquetFile(path)
+        col_idx = pf.schema_arrow.get_field_index("date")
+        if col_idx < 0:
             return None
-        return df["date"].max()
+        table = pf.read(columns=["date"])
+        return table.column("date").to_pandas().max()
 
     def append_prices(self, symbol: str, df: pd.DataFrame):
         if df is None or df.empty:
             return
         path = self.data_dir / f"{symbol}.parquet"
         if path.exists():
-            existing = pd.read_parquet(path)
-            df = pd.concat([existing, df], ignore_index=True)
+            existing = pd.read_parquet(path, columns=["date"])
+            new_dates = set(df["date"])
+            existing_dates = set(existing["date"])
+            if new_dates.issubset(existing_dates):
+                logger.info("No new dates to append for %s", symbol)
+                return
+            existing_full = pd.read_parquet(path)
+            df = pd.concat([existing_full, df], ignore_index=True)
             df = df.drop_duplicates(subset=["date"], keep="last")
         df = df.sort_values("date").reset_index(drop=True)
         df.to_parquet(path, index=False)

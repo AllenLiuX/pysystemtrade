@@ -12,7 +12,7 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import (
     Table, Column, BigInteger, Float, String, Date, DateTime, Text,
-    UniqueConstraint, Index, MetaData, func,
+    UniqueConstraint, Index, MetaData, func, select,
 )
 from sqlalchemy.dialects.postgresql import insert
 
@@ -78,7 +78,7 @@ class PGDailyPricesData:
     def get_latest_date(self, symbol: str) -> Optional[str]:
         """Get the latest date for a symbol. Returns 'YYYY-MM-DD' or None."""
         with self.engine.connect() as conn:
-            stmt = func.max(self.table.c.dt).label("max_dt").select().where(
+            stmt = select(func.max(self.table.c.dt)).where(
                 self.table.c.symbol == symbol
             )
             result = conn.execute(stmt).scalar()
@@ -101,9 +101,12 @@ class PGDailyPricesData:
         records = df.to_dict("records")
         rows = []
         for rec in records:
+            date_val = rec.get("date")
+            if date_val is None:
+                continue
             rows.append({
                 "symbol": symbol,
-                "dt": pd.to_datetime(rec["date"]).date(),
+                "dt": pd.to_datetime(date_val).date(),
                 "open": float(rec["open"]) if pd.notna(rec.get("open")) else None,
                 "high": float(rec["high"]) if pd.notna(rec.get("high")) else None,
                 "low": float(rec["low"]) if pd.notna(rec.get("low")) else None,

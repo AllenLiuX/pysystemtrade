@@ -2,19 +2,29 @@
 CnFuturesFetcher - Orchestrates Chinese futures data fetching.
 
 Workflow:
-    1. Get contract list from Sina via futures_display_main_sina
-    2. For each continuous contract (e.g. RB0):
-       a. Check latest date in store
-       b. Fetch daily data from futures_zh_daily_sina (returns full history)
-       c. Filter to only new rows since latest date
-       d. Upsert into store
-    3. Optionally fetch contract details for instrument metadata
+    Continuous contracts (default):
+        1. Get contract list from Sina via futures_display_main_sina
+        2. For each continuous contract (e.g. RB0):
+           a. Check latest date in store
+           b. Fetch daily data from futures_zh_daily_sina (returns full history)
+           c. Filter to only new rows since latest date
+           d. Upsert into store
+        3. Optionally fetch contract details for instrument metadata
+
+    Individual contracts (--individual):
+        1. Discover all individual contract codes from exchange info endpoints
+        2. For each contract:
+           a. Check latest date in store
+           b. Fetch daily data
+           c. Upsert into store
+        3. No instrument metadata fetched (too many contracts)
 
 CLI:
-    python -m sysinit.cnfutures.fetcher              # incremental fetch all
-    python -m sysinit.cnfutures.fetcher --force      # re-fetch all data
-    python -m sysinit.cnfutures.fetcher --symbol RB0 # fetch single symbol
-    python -m sysinit.cnfutures.fetcher --init-db    # create DB tables
+    python -m sysinit.cnfutures.fetcher                  # incremental continuous
+    python -m sysinit.cnfutures.fetcher --force          # re-fetch continuous
+    python -m sysinit.cnfutures.fetcher --symbol RB0     # fetch single symbol
+    python -m sysinit.cnfutures.fetcher --init-db        # create DB tables
+    python -m sysinit.cnfutures.fetcher --individual     # fetch individual contracts
 """
 
 import argparse
@@ -72,13 +82,16 @@ class CnFuturesFetcher:
         symbols = contract_list["symbol"].tolist()
         logger.info("Found %d contracts", len(symbols))
 
+        name_lookup = dict(zip(contract_list["symbol"], contract_list["name"]))
+
         success_count = 0
         fail_count = 0
 
         for i, symbol in enumerate(symbols):
             logger.info("[%d/%d] Fetching %s", i + 1, len(symbols), symbol)
+            contract_name = name_lookup.get(symbol, "")
             try:
-                self._fetch_single(symbol)
+                self._fetch_single(symbol, contract_name)
                 success_count += 1
             except Exception as e:
                 logger.error("Failed to fetch %s: %s", symbol, e)
@@ -89,24 +102,19 @@ class CnFuturesFetcher:
 
     def fetch_single(self, symbol: str):
         """Fetch daily data for a single symbol."""
-        self._fetch_single(symbol)
+        cl = self.client.get_contract_list()
+        name = cl[cl["symbol"] == symbol]["name"].values if cl is not None else []
+        self._fetch_single(symbol, name[0] if len(name) > 0 else "")
 
-    def _fetch_single(self, symbol: str):
+    def _fetch_single(self, symbol: str, contract_name: str = "", skip_instrument: bool = False):
         """Internal: fetch and store daily data for one symbol."""
         # Fetch contract detail for metadata (best-effort, use continuous symbol)
-        if self.instrument_store:
+        if self.instrument_store and not skip_instrument:
             detail_df = self.client.get_contract_detail(symbol)
             if detail_df is not None and not detail_df.empty:
                 detail_map = dict(zip(detail_df["item"], detail_df["value"]))
-                # Add name from contract list
-                try:
-                    cl = self.client.get_contract_list()
-                    if cl is not None:
-                        match = cl[cl["symbol"] == symbol]
-                        if not match.empty:
-                            detail_map["name"] = match.iloc[0]["name"]
-                except Exception:
-                    pass
+                if contract_name:
+                    detail_map["name"] = contract_name
                 self.instrument_store.upsert_instrument(symbol, detail_map)
 
         # Check latest date for incremental fetch
@@ -151,6 +159,81 @@ class CnFuturesFetcher:
                 self.instrument_store.upsert_instrument(symbol, detail_map)
             time.sleep(API_SLEEP)
 
+    def fetch_individual_all(self):
+        """Discover and fetch daily data for all individual contract months."""
+        logger.info("Discovering individual contracts across all exchanges...")
+        contracts = self.client.get_all_individual_contracts()
+        logger.info("Found %d individual contracts", len(contracts))
+
+        if not contracts:
+            logger.error("No individual contracts discovered")
+            return
+
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+
+        for i, symbol in enumerate(contracts):
+            logger.info("[%d/%d] %s", i + 1, len(contracts), symbol)
+
+            # Check if already up to date (fast path, skip instrument detail)
+            latest = self.price_store.get_latest_date(symbol)
+            if latest and not self.force:
+                logger.info("  Already up to date: %s", latest)
+                skip_count += 1
+                time.sleep(0.1)  # fast sleep for already-cached
+                continue
+            if latest:
+                logger.info("  Latest in store: %s (re-fetching)", latest)
+
+            try:
+                self._fetch_single(symbol, skip_instrument=True)
+                success_count += 1
+            except Exception as e:
+                logger.error("Failed to fetch %s: %s", symbol, e)
+                fail_count += 1
+            time.sleep(API_SLEEP)
+
+        logger.info("Done. Success: %d, Failed: %d, Skipped: %d",
+                     success_count, fail_count, skip_count)
+
+    def fetch_current_all(self):
+        """Discover and fetch daily data for currently traded individual contracts."""
+        logger.info("Discovering current contracts via futures_zh_realtime...")
+        contracts = self.client.get_current_contracts()
+        logger.info("Found %d current contracts", len(contracts))
+
+        if not contracts:
+            logger.error("No current contracts discovered")
+            return
+
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+
+        for i, symbol in enumerate(contracts):
+            logger.info("[%d/%d] %s", i + 1, len(contracts), symbol)
+
+            latest = self.price_store.get_latest_date(symbol)
+            if latest and not self.force:
+                logger.info("  Already up to date: %s", latest)
+                skip_count += 1
+                time.sleep(0.05)
+                continue
+            if latest:
+                logger.info("  Latest in store: %s (re-fetching)", latest)
+
+            try:
+                self._fetch_single(symbol, skip_instrument=True)
+                success_count += 1
+            except Exception as e:
+                logger.error("Failed to fetch %s: %s", symbol, e)
+                fail_count += 1
+            time.sleep(API_SLEEP)
+
+        logger.info("Done. Success: %d, Failed: %d, Skipped: %d",
+                     success_count, fail_count, skip_count)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch Chinese futures data from akshare")
@@ -158,6 +241,10 @@ def main():
     parser.add_argument("--symbol", type=str, help="Fetch single symbol only")
     parser.add_argument("--init-db", action="store_true", help="Create database tables")
     parser.add_argument("--instruments-only", action="store_true", help="Fetch only contract metadata")
+    parser.add_argument("--individual", action="store_true",
+                        help="Fetch individual contract months instead of continuous")
+    parser.add_argument("--current", action="store_true",
+                        help="Fetch currently traded contracts via real-time market data")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
@@ -174,6 +261,14 @@ def main():
 
     if args.instruments_only:
         fetcher.fetch_instruments_only()
+        return
+
+    if args.individual:
+        fetcher.fetch_individual_all()
+        return
+
+    if args.current:
+        fetcher.fetch_current_all()
         return
 
     if args.symbol:
