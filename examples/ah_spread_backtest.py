@@ -62,7 +62,6 @@
 # %%
 # Setup: Change to project root directory
 import os
-import sys
 from pathlib import Path
 
 
@@ -271,11 +270,6 @@ def calc_instrument_pnl_decomposition(system, instruments, pairs_list):
     """
     a_codes = {a for a, _ in pairs_list}
 
-    long_a_pnl = []
-    short_a_pnl = []
-    long_h_pnl = []
-    short_h_pnl = []
-
     positions_dict = {}
     pnl_dict = {}
 
@@ -344,7 +338,7 @@ def calc_pair_normalized_pnl(system, pairs_list, data):
         Dict with per-pair equity curves and aggregate pair P&L
     """
     pair_pnl_curves = {}
-    all_pair_pnl = pd.Series(0.0)
+    daily_pnl_series = []
 
     for a_code, h_code in pairs_list:
         try:
@@ -387,20 +381,24 @@ def calc_pair_normalized_pnl(system, pairs_list, data):
             pair_daily_pnl = norm_pos_a_ret.loc[common_ret] * ret_a.loc[common_ret] + \
                             norm_pos_h_ret.loc[common_ret] * ret_h.loc[common_ret]
 
+            daily_pnl_series.append(pair_daily_pnl)
+
             # Scale to capital allocation per pair
             capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
             pair_cum_pnl = (1 + pair_daily_pnl).cumprod() * capital_per_pair
 
             pair_pnl_curves[f"{a_code}/{h_code}"] = pair_cum_pnl
 
-            if all_pair_pnl.empty:
-                all_pair_pnl = pair_cum_pnl
-            else:
-                common = all_pair_pnl.index.intersection(pair_cum_pnl.index)
-                all_pair_pnl = all_pair_pnl.loc[common] + pair_cum_pnl.loc[common]
-
         except Exception as e:
             continue
+
+    # Aggregate all daily P&L series by summing (handles different date ranges gracefully)
+    if daily_pnl_series:
+        combined_daily = pd.DataFrame(daily_pnl_series).sum()
+        capital_per_pair = system.config.notional_trading_capital / len(pairs_list)
+        all_pair_pnl = (1 + combined_daily).cumprod() * capital_per_pair * len(pairs_list)
+    else:
+        all_pair_pnl = pd.Series(dtype=float)
 
     return pair_pnl_curves, all_pair_pnl
 
