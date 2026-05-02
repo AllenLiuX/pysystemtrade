@@ -15,6 +15,22 @@ import numpy as np
 from systems.ah_data import AHData
 
 
+class MockCache:
+    """Mock cache that simply calls the function without caching."""
+
+    def calc_or_cache(
+        self,
+        func,
+        this_stage,
+        *args,
+        protected=False,
+        not_pickable=False,
+        instrument_classify=True,
+        **kwargs,
+    ):
+        return func(this_stage, *args, **kwargs)
+
+
 class MockRawData:
     """Mock RawData stage for testing."""
 
@@ -32,6 +48,7 @@ class MockSystem:
 
     def __init__(self, price_data: dict):
         self.rawdata = MockRawData(price_data)
+        self.cache = MockCache()
         self._ah_data = None
 
     @property
@@ -247,3 +264,25 @@ class TestGetAhSpreadZscore:
 
         late_zscore = zscore.dropna().iloc[-1]
         assert late_zscore > 0
+
+    def test_h_share_zscore_is_negated(self):
+        """H-share z-score is the negative of A-share z-score."""
+        a_prices = [100, 102, 104, 106, 108, 110, 112, 114, 116, 118,
+                    120, 122, 124, 126, 128, 130, 132, 134, 136, 138,
+                    140, 142, 144, 146, 148, 150]
+        h_prices = [100] * len(a_prices)
+
+        system = self._make_mock_system(a_prices, h_prices)
+        zscore_a = system.ah_data.get_ah_spread_zscore("601318.SH", lookback=10)
+        zscore_h = system.ah_data.get_ah_spread_zscore("02318.HK", lookback=10)
+
+        # Both should have data
+        assert not zscore_a.dropna().empty
+        assert not zscore_h.dropna().empty
+
+        # H-share z-score should be the negative of A-share z-score
+        common = zscore_a.dropna().index.intersection(zscore_h.dropna().index)
+        pd.testing.assert_series_equal(
+            zscore_a.loc[common],
+            -zscore_h.loc[common]
+        )

@@ -36,6 +36,57 @@ class AHData(SystemStage):
 
     def __init__(self):
         self._ah_mapping = None
+        self._price_cache = {}
+        self._spread_cache = {}
+
+    def _get_cached_price(self, instrument_code: str) -> pd.Series:
+        """
+        Cache daily prices to avoid redundant DB queries.
+        Each instrument's price is fetched only once per AHData instance.
+        """
+        if instrument_code not in self._price_cache:
+            self._price_cache[instrument_code] = self.parent.rawdata.get_daily_prices(instrument_code)
+        return self._price_cache[instrument_code]
+
+    def _get_spread_for_pair(self, a_code: str, h_code: str) -> pd.Series:
+        """
+        Compute spread for a pair once, cache it so both legs share the result.
+        Uses a normalized pair key so (A,H) and (H,A) map to the same cache entry.
+        """
+        pair_key = tuple(sorted([a_code, h_code]))
+        if pair_key not in self._spread_cache:
+            try:
+                a_prices = self._get_cached_price(a_code)
+                h_prices = self._get_cached_price(h_code)
+            except Exception as e:
+                self.log.warning("Failed to fetch prices for %s/%s: %s", a_code, h_code, e)
+                self._spread_cache[pair_key] = pd.Series(dtype=float)
+                return self._spread_cache[pair_key]
+
+            if a_prices.empty or h_prices.empty:
+                self._spread_cache[pair_key] = pd.Series(dtype=float)
+                return self._spread_cache[pair_key]
+
+            if isinstance(a_prices, pd.DataFrame):
+                a_prices = a_prices.iloc[:, 0]
+            if isinstance(h_prices, pd.DataFrame):
+                h_prices = h_prices.iloc[:, 0]
+
+            common_dates = a_prices.index.intersection(h_prices.index)
+            if len(common_dates) < 2:
+                self._spread_cache[pair_key] = pd.Series(dtype=float)
+                return self._spread_cache[pair_key]
+
+            a_aligned = a_prices.loc[common_dates]
+            h_aligned = h_prices.loc[common_dates]
+
+            a_log_ret = np.log(a_aligned).diff()
+            h_log_ret = np.log(h_aligned).diff()
+
+            spread = (a_log_ret - h_log_ret).cumsum().dropna()
+            self._spread_cache[pair_key] = spread
+
+        return self._spread_cache[pair_key]
 
     def _load_ah_mapping(self) -> Dict[str, str]:
         """
@@ -81,17 +132,13 @@ class AHData(SystemStage):
         mapping = self._load_ah_mapping()
         return sorted(mapping.keys())
 
-    @input
+    @diagnostic()
     def get_ah_log_return_spread(self, instrument_code: str) -> pd.Series:
         """
         Cumulative sum of (log_ret_A - log_ret_H) on common trading days.
 
-        Steps:
-        1. Look up the paired instrument
-        2. Fetch daily prices for both legs via rawdata
-        3. Align to common trading days (intersection of both calendars)
-        4. Compute daily log returns for both legs
-        5. Compute spread = cumsum(log_ret_A - log_ret_H)
+        Uses internal price cache and pair-level spread cache to avoid
+        redundant DB queries and duplicate computations.
 
         :param instrument_code: A-share or H-share code
         :returns: pd.Series with DatetimeIndex, NaN for non-AH instruments
@@ -105,7 +152,6 @@ class AHData(SystemStage):
             instrument_code, pair_code,
         )
 
-        # Determine which leg is A and which is H
         if instrument_code.endswith(".HK"):
             h_code = instrument_code
             a_code = pair_code
@@ -113,54 +159,21 @@ class AHData(SystemStage):
             a_code = instrument_code
             h_code = pair_code
 
-        # Fetch prices for both legs
-        try:
-            a_prices = self.parent.rawdata.get_daily_prices(a_code)
-            h_prices = self.parent.rawdata.get_daily_prices(h_code)
-        except Exception as e:
-            self.log.warning("Failed to fetch prices for %s/%s: %s", a_code, h_code, e)
-            return pd.Series(dtype=float)
+        return self._get_spread_for_pair(a_code, h_code)
 
-        if a_prices.empty or h_prices.empty:
-            return pd.Series(dtype=float)
-
-        # Ensure both are pd.Series
-        if isinstance(a_prices, pd.DataFrame):
-            a_prices = a_prices.iloc[:, 0]
-        if isinstance(h_prices, pd.DataFrame):
-            h_prices = h_prices.iloc[:, 0]
-
-        # Align to common trading days
-        common_dates = a_prices.index.intersection(h_prices.index)
-        if len(common_dates) < 2:
-            return pd.Series(dtype=float)
-
-        a_aligned = a_prices.loc[common_dates]
-        h_aligned = h_prices.loc[common_dates]
-
-        # Compute log returns
-        a_log_ret = np.log(a_aligned).diff()
-        h_log_ret = np.log(h_aligned).diff()
-
-        # Compute spread = cumulative sum of (log_ret_A - log_ret_H)
-        spread = (a_log_ret - h_log_ret).cumsum()
-
-        # Drop initial NaN from diff()
-        spread = spread.dropna()
-
-        return spread
-
-    @input
+    @diagnostic()
     def get_ah_spread_zscore(self, instrument_code: str, lookback: int = 20) -> pd.Series:
         """
         Rolling z-score of the spread level.
 
         z = (spread - rolling_mean(spread, lookback)) / rolling_std(spread, lookback)
 
+        For H-shares, the z-score is negated so that after the ah_spread rule
+        applies its negation, A and H shares receive opposite-signed forecasts.
+
         :param instrument_code: A-share or H-share code
         :param lookback: Rolling window in days (default: 20)
         :returns: pd.Series with DatetimeIndex, NaN for non-AH instruments
-                  or when insufficient lookback data is available
         """
         spread = self.get_ah_log_return_spread(instrument_code)
 
@@ -172,11 +185,11 @@ class AHData(SystemStage):
             instrument_code, lookback,
         )
 
-        # Compute rolling mean and std
         rolling_mean = spread.rolling(window=lookback, min_periods=lookback).mean()
         rolling_std = spread.rolling(window=lookback, min_periods=lookback).std()
 
-        # Compute z-score
         zscore = (spread - rolling_mean) / rolling_std
 
+        if instrument_code.endswith(".HK"):
+            return -zscore
         return zscore
