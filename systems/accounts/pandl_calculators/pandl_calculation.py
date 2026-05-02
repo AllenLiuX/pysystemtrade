@@ -56,7 +56,7 @@ class pandlCalculation(object):
         self, frequency: Frequency = DAILY_PRICE_FREQ
     ) -> pd.Series:
         capital = self.capital
-        if isinstance(capital, pd.Series) and isinstance(capital.index, pd.RangeIndex):
+        if isinstance(capital, pd.Series) and not isinstance(capital.index, pd.DatetimeIndex):
             capital = capital.copy()
             capital.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(capital))
         resample_freq = from_config_frequency_pandas_resample(frequency)
@@ -70,10 +70,8 @@ class pandlCalculation(object):
         as_pd_series = self.as_pd_series(**kwargs)
 
         ## FIXME: Ugly to get pandas 2.x working
-        if isinstance(as_pd_series.index, pd.RangeIndex):
+        if not isinstance(as_pd_series.index, pd.DatetimeIndex):
             as_pd_series.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(as_pd_series))
-        else:
-            as_pd_series.index = pd.to_datetime(as_pd_series.index)
 
         resample_freq = from_config_frequency_pandas_resample(frequency)
         pd_series_at_frequency = as_pd_series.resample(resample_freq).sum()
@@ -137,7 +135,11 @@ class pandlCalculation(object):
 
     @property
     def length_in_months(self) -> int:
-        positions_monthly = self.positions.resample("ME").last()
+        positions = self.positions
+        if isinstance(positions, pd.Series) and not isinstance(positions.index, pd.DatetimeIndex):
+            positions = positions.copy()
+            positions.index = pd.bdate_range(end=pd.Timestamp.today(), periods=len(positions))
+        positions_monthly = positions.resample("ME").last()
         positions_ffill = positions_monthly.ffill()
         positions_no_nans = positions_ffill.dropna()
 
